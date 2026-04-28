@@ -11,7 +11,7 @@
 
         // Preference z getInitialData() — okamžitě k dispozici (čte jen AppConfig, bez Drive API)
         var pref = S.data.ktPref || { useSubfolders: false, targetFolderId: '', nameMode: 'date', seriesFolderId: '' };
-        var nameMode = pref.nameMode || 'date';
+        var nameMode = getKtDefaultNameMode(today, pref.nameMode);
         var hasSeriesFolder = !!pref.seriesFolderId;
         // Složka se načítá lazy — zobrazíme placeholder a aktualizujeme async níže
         var autoName = S.data.ktAutoFolderName || '…';
@@ -121,6 +121,13 @@
         var yEl = document.getElementById('fKtY');
         var copyDateEl = document.getElementById('fKtCopyDate');
         var subEl = document.getElementById('fKtSub');
+        var nameModeTouched = false;
+
+        function getKtDefaultNameMode(date, savedMode) {
+            var day = date.getDay();
+            if (day === 1 || day === 4 || day === 5) return 'dayMorning';
+            return savedMode || 'date';
+        }
 
         function ktGetDate() {
             var raw = copyDateEl && copyDateEl.value ? copyDateEl.value : todayIso;
@@ -179,7 +186,17 @@
         copyDateEl.addEventListener('input', ktUpdPreview);
         if (subEl) subEl.addEventListener('change', ktUpdPath);
         document.querySelectorAll('input[name="ktNameMode"]').forEach(function (r) {
-            r.addEventListener('change', ktUpdPreview);
+            r.addEventListener('change', function () {
+                nameModeTouched = true;
+                ktUpdPreview();
+            });
+        });
+        copyDateEl.addEventListener('change', function () {
+            if (nameModeTouched) return;
+            var nextMode = getKtDefaultNameMode(ktGetDate(), 'date');
+            var radioEl = document.querySelector('input[name="ktNameMode"][value="' + nextMode + '"]');
+            if (radioEl) radioEl.checked = true;
+            ktUpdPreview();
         });
 
         // Radio: přepínání auto/custom
