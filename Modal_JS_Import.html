@@ -441,6 +441,11 @@
 
                 html += '<div class="im-config-card" style="margin-top:10px">';
                 html += '<div class="im-config-hd"><span class="im-config-icon">' + cfg.icon + '</span><span class="im-config-title">' + esc(cfg.label) + '</span></div>';
+                if (cfg.key === 'cash') {
+                    html += '<input type="file" id="fCashDir" accept=".csv" webkitdirectory directory multiple hidden onchange="imFindCashFile(this.files)">';
+                    html += '<button type="button" class="btn btn-s" style="width:100%;margin-bottom:10px" onclick="document.getElementById(\'fCashDir\').click()">Najít dnešní soubor ve složce</button>';
+                    html += '<div class="fg-hint" style="margin-bottom:10px">Hledá abvk_detailed_ddmmrrrr_HHMM.csv v čase 10:58-11:43.</div>';
+                }
                 html += fg('Cílový list', '<input type="text" class="fg-input" id="fImpSheet' + i + '" value="' + esc(s.targetSheet || cfg.defaultSheet) + '" oninput="imSetTargetSheet(' + i + ', this.value)">');
                 html += '<div class="im-tgl" onclick="imToggleOverwrite(' + i + ')">' +
                     '<div class="im-tgl-info">' +
@@ -507,6 +512,18 @@
         window.imSetFileSheet = function (slotIdx, sheetIdx) {
             S._impSlots[slotIdx].sheetIdx = parseInt(sheetIdx, 10);
         };
+        window.imFindCashFile = function (fileList) {
+            var files = Array.prototype.slice.call(fileList || []);
+            if (!files.length) return;
+
+            var candidate = findCashFileCandidate(files, new Date());
+            if (!candidate) {
+                alert('Ve vybrané složce nebyl nalezen dnešní soubor Pokladní data v čase 10:58-11:43.');
+                return;
+            }
+
+            imProcessFile(candidate.file, 0);
+        };
 
         async function imProcessFile(file, i) {
             var cfg = IMPORT_MODULES[i];
@@ -522,6 +539,13 @@
             render();
 
             try {
+                if (cfg.key === 'cash' && ext === 'csv') {
+                    S._impSlots[i].sheetNames = null;
+                    S._impSlots[i].sheetIdx = 0;
+                    S._impSlots[i].status = 'ok';
+                    return;
+                }
+
                 var workbook = await readWorkbook(file);
                 S._impSlots[i].sheetNames = workbook.SheetNames;
                 S._impSlots[i].sheetIdx = 0;
@@ -533,6 +557,36 @@
                 setLoading(false);
                 render();
             }
+        }
+
+        function findCashFileCandidate(files, date) {
+            var dd = String(date.getDate()).padStart(2, '0');
+            var mm = String(date.getMonth() + 1).padStart(2, '0');
+            var yyyy = String(date.getFullYear());
+            var datePart = dd + mm + yyyy;
+            var re = new RegExp('^abvk_detailed_' + datePart + '_(\\d{4})\\.csv$', 'i');
+            var from = 10 * 60 + 58;
+            var to = 11 * 60 + 43;
+            var best = null;
+
+            files.forEach(function (file) {
+                var match = file.name.match(re);
+                if (!match) return;
+
+                var time = match[1];
+                var hour = parseInt(time.substring(0, 2), 10);
+                var minute = parseInt(time.substring(2, 4), 10);
+                if (isNaN(hour) || isNaN(minute)) return;
+
+                var total = hour * 60 + minute;
+                if (total < from || total > to) return;
+
+                if (!best || total > best.total) {
+                    best = { file: file, total: total };
+                }
+            });
+
+            return best;
         }
 
         var AppLogger = {
