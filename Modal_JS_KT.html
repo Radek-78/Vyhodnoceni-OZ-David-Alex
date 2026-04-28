@@ -12,7 +12,7 @@
 
         // Preference z getInitialData() — okamžitě k dispozici (čte jen AppConfig, bez Drive API)
         var pref = S.data.ktPref || { useSubfolders: false, targetFolderId: '', nameMode: 'date', seriesFolderId: '' };
-        var nameMode = getKtDefaultNameMode(today, pref.nameMode);
+        var nameMode = getKtDefaultNameMode(today, pref.nameMode || cfg.ktNameMode);
         var hasSeriesFolder = !!pref.seriesFolderId;
         // Složka se načítá lazy — zobrazíme placeholder a aktualizujeme async níže
         var autoName = S.data.ktAutoFolderName || '…';
@@ -123,6 +123,7 @@
         var copyDateEl = document.getElementById('fKtCopyDate');
         var subEl = document.getElementById('fKtSub');
         var nameModeTouched = false;
+        var ktContextTouched = false;
 
         function getKtDefaultNameMode(date, savedMode) {
             var day = date.getDay();
@@ -182,8 +183,8 @@
                 esc(folderName) + ' / <strong>' + esc(y) + '</strong> / <strong>KT' + esc(w) + '</strong> / ' + esc(fn);
         }
 
-        wEl.addEventListener('input', ktUpdName);
-        yEl.addEventListener('input', ktUpdName);
+        wEl.addEventListener('input', function () { ktContextTouched = true; ktUpdName(); });
+        yEl.addEventListener('input', function () { ktContextTouched = true; ktUpdName(); });
         copyDateEl.addEventListener('input', ktUpdPreview);
         if (subEl) subEl.addEventListener('change', ktUpdPath);
         document.querySelectorAll('input[name="ktNameMode"]').forEach(function (r) {
@@ -212,16 +213,14 @@
         // Initial preview + subfolder path
         ktUpdPreview();
 
-        if (!wk) {
-            google.script.run
-                .withSuccessHandler(function (ctx) {
-                    if (!ctx) return;
-                    if (ctx.week && !wEl.value) wEl.value = ctx.week;
-                    if (ctx.year && !yEl.value) yEl.value = ctx.year;
-                    ktUpdPreview();
-                })
-                .moduleKT_getCurrentContext();
-        }
+        google.script.run
+            .withSuccessHandler(function (ctx) {
+                if (!ctx || ktContextTouched) return;
+                if (ctx.week) wEl.value = ctx.week;
+                if (ctx.year) yEl.value = ctx.year;
+                ktUpdPreview();
+            })
+            .moduleKT_getCurrentContext();
 
         // Lazy load: složka šablony (2× Drive API) se načítá asynchronně
         // aby neblokovala zobrazení formuláře ani inicializaci modalu.
