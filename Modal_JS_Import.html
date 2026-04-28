@@ -406,6 +406,7 @@
                 if (!S._impSlots[i]) S._impSlots[i] = {};
                 if (!S._impSlots[i].targetSheet) S._impSlots[i].targetSheet = cfg.defaultSheet;
                 if (S._impSlots[i].overwrite === undefined) S._impSlots[i].overwrite = true;
+                if (cfg.key === 'cash') S._impSlots[i].overwrite = true;
                 if (S._impSlots[i].sheetIdx === undefined) S._impSlots[i].sheetIdx = 0;
             });
         }
@@ -453,7 +454,7 @@
                 html += '<div class="im-tgl" onclick="imToggleOverwrite(' + i + ')">' +
                     '<div class="im-tgl-info">' +
                     '<span class="im-tgl-label">Přepsat data</span>' +
-                    '<span class="im-tgl-desc">Vymaže cílový list před zápisem tohoto modulu</span>' +
+                    '<span class="im-tgl-desc">' + (cfg.key === 'cash' ? 'Automaticky vyčistí C:J od řádku 2' : 'Vymaže cílový list před zápisem tohoto modulu') + '</span>' +
                     '</div>' +
                     imToggle('fImpOverwrite' + i, s.overwrite !== false) +
                     '</div>';
@@ -492,6 +493,11 @@
             S._impSlots[i].targetSheet = value;
         };
         window.imToggleOverwrite = function (i) {
+            if (IMPORT_MODULES[i] && IMPORT_MODULES[i].key === 'cash') {
+                S._impSlots[i].overwrite = true;
+                render();
+                return;
+            }
             S._impSlots[i].overwrite = !(S._impSlots[i].overwrite !== false);
             render();
         };
@@ -887,7 +893,7 @@
                     }
                 };
                 r.onerror = reject;
-                if (ext === 'csv') r.readAsText(file, 'utf-8');
+                if (ext === 'csv') r.readAsText(file, 'windows-1250');
                 else r.readAsArrayBuffer(file);
             });
         }

@@ -13,6 +13,10 @@ const _ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 const ModuleImport = {
 
   CASH_COLUMNS: ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'],
+  CASH_DATE_COLUMN: 3,
+  CASH_FIRST_DATA_COLUMN: 4,
+  CASH_CLEAR_FIRST_COLUMN: 3,
+  CASH_CLEAR_LAST_COLUMN: 10,
 
   /**
    * Import datové dávky do listu
@@ -156,25 +160,26 @@ const ModuleImport = {
     let sheet = ss.getSheetByName(sheetName);
     if (!sheet) {
       sheet = ss.insertSheet(sheetName);
-      sheet.getRange(1, 1, 1, ModuleImport.CASH_COLUMNS.length).setValues([ModuleImport.CASH_COLUMNS]);
+      sheet.getRange(1, ModuleImport.CASH_DATE_COLUMN).setValue('Datum');
+      sheet.getRange(1, ModuleImport.CASH_FIRST_DATA_COLUMN, 1, ModuleImport.CASH_COLUMNS.length).setValues([ModuleImport.CASH_COLUMNS]);
       sheet.setFrozenRows(1);
     }
 
-    const header = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), ModuleImport.CASH_COLUMNS.length)).getValues()[0];
+    const header = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), ModuleImport.CASH_CLEAR_LAST_COLUMN)).getValues()[0];
     const colMap = ModuleImport.getCashTargetColumnMap_(header);
     const missing = ModuleImport.CASH_COLUMNS.filter(col => !colMap[col]);
     if (missing.length) {
       return { success: false, error: 'V cílovém listu chybí sloupce: ' + missing.join(', ') };
     }
 
-    if (options.isFirstChunk && options.overwrite) {
+    if (options.isFirstChunk) {
       const maxRows = sheet.getMaxRows();
       if (maxRows > 1) {
-        ModuleImport.clearCashData_(sheet, colMap, maxRows);
+        ModuleImport.clearCashData_(sheet, maxRows);
       }
     }
 
-    const startRow = options.startRow !== undefined ? Number(options.startRow) : Math.max(sheet.getLastRow() + 1, 2);
+    const startRow = options.startRow !== undefined ? Number(options.startRow) : 2;
     const neededRows = startRow + data.length - 1;
     const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
     const rowsToPrepare = Math.max(neededRows, preparedRows);
@@ -188,6 +193,11 @@ const ModuleImport = {
       ModuleImport.CASH_COLUMNS.every((col, idx) => colMap[col] === firstCol + idx);
 
     try {
+      const importDate = new Date();
+      sheet.getRange(startRow, ModuleImport.CASH_DATE_COLUMN, data.length, 1)
+        .setValues(data.map(() => [importDate]))
+        .setNumberFormat('dd.MM.yyyy');
+
       if (isContiguous) {
         sheet.getRange(startRow, firstCol, data.length, ModuleImport.CASH_COLUMNS.length).setValues(data);
       } else {
@@ -252,24 +262,17 @@ const ModuleImport = {
     const map = {};
     header.forEach((cell, idx) => {
       const key = String(cell || '').trim().toUpperCase();
-      if (ModuleImport.CASH_COLUMNS.indexOf(key) !== -1) map[key] = idx + 1;
+      const col = idx + 1;
+      if (col >= ModuleImport.CASH_FIRST_DATA_COLUMN && ModuleImport.CASH_COLUMNS.indexOf(key) !== -1) {
+        map[key] = col;
+      }
     });
     return map;
   },
 
-  clearCashData_(sheet, colMap, maxRows) {
-    const firstCol = Math.min.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
-    const lastCol = Math.max.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
-    const isContiguous = (lastCol - firstCol + 1) === ModuleImport.CASH_COLUMNS.length &&
-      ModuleImport.CASH_COLUMNS.every((col, idx) => colMap[col] === firstCol + idx);
-
-    if (isContiguous) {
-      sheet.getRange(2, firstCol, maxRows - 1, ModuleImport.CASH_COLUMNS.length).clearContent();
-    } else {
-      ModuleImport.CASH_COLUMNS.forEach(col => {
-        sheet.getRange(2, colMap[col], maxRows - 1, 1).clearContent();
-      });
-    }
+  clearCashData_(sheet, maxRows) {
+    const width = ModuleImport.CASH_CLEAR_LAST_COLUMN - ModuleImport.CASH_CLEAR_FIRST_COLUMN + 1;
+    sheet.getRange(2, ModuleImport.CASH_CLEAR_FIRST_COLUMN, maxRows - 1, width).clearContent();
   },
 
   normalizeArticle_(value) {
