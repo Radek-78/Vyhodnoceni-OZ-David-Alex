@@ -331,6 +331,22 @@ const ModuleKT = {
       };
     }
   }
+  ,
+
+  /**
+   * Aktuální KT kontext pro formulář.
+   * @returns {{week: number|string, year: number|string}}
+   */
+  getCurrentContext() {
+    var current = Utils.getCurrentWeek();
+    var configuredWeek = parseInt(AppConfig.get('ktWeek'), 10);
+    var configuredYear = parseInt(AppConfig.get('ktYear'), 10);
+
+    return {
+      week: (!isNaN(configuredWeek) && configuredWeek >= 1 && configuredWeek <= 53) ? configuredWeek : current.week,
+      year: (!isNaN(configuredYear) && configuredYear >= 2020 && configuredYear <= 2099) ? configuredYear : current.year
+    };
+  }
 
 };
 
@@ -347,4 +363,8 @@ function moduleKT_getTemplateInfo() {
 
 function moduleKT_getPreferences() {
   return ModuleKT.getPreferences();
+}
+
+function moduleKT_getCurrentContext() {
+  return ModuleKT.getCurrentContext();
 }
