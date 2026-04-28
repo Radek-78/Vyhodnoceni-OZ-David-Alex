@@ -531,7 +531,7 @@
             }
 
             S._impSlots[i] = Object.assign({}, S._impSlots[i], { file: file, name: file.name, status: 'loading' });
-            setLoading(true, 'Načítám soubor...', file.name);
+            AppLogger.info('Vybrán soubor pro ' + cfg.label + ': ' + file.name);
             render();
 
             try {
@@ -549,8 +549,8 @@
             } catch (e) {
                 S._impSlots[i].status = 'ok';
                 console.error('Chyba při parsování struktury:', e);
+                AppLogger.warn('Strukturu souboru se nepodařilo načíst předem: ' + file.name);
             } finally {
-                setLoading(false);
                 render();
             }
         }
@@ -583,17 +583,22 @@
 
             var startTime = performance.now();
             AppLogger.info('🚀 Start importu: ' + queue.length + ' souborů.');
+            setProgress(1, 'Start importu');
 
             setBusy(true);
+            var completed = false;
             try {
                 var result = await runSheetImport(queue, startTime);
+                completed = true;
+                setProgress(100, 'Import dokončen');
                 showImportDone(result);
             } catch (err) {
+                AppLogger.error('Import přerušen: ' + err.message);
                 showResult('Chyba importu', 'Proces byl přerušen:<br>' + esc(err.message), '❌');
             } finally {
-                setLoading(false);
                 setBusy(false);
-                setProgress(0, '');
+                if (completed) setTimeout(function () { setProgress(0, ''); }, 4000);
+                else setProgress(0, '');
             }
         };
 
@@ -611,10 +616,13 @@
                 var targetSheet = slot.targetSheet;
                 var overwrite = slot.overwrite !== false;
                 var nextStartRow = 1;
+                var moduleBase = Math.round((i / queue.length) * 100);
+                var moduleSpan = Math.max(1, Math.round(100 / queue.length));
 
                 if (slot.moduleConfig.key === 'cash') {
-                    var cashRows = await prepareCashRows(file);
+                    var cashRows = await prepareCashRows(file, moduleBase, moduleSpan);
                     if (!cashRows.length) {
+                        AppLogger.warn('Pokladní data: po filtraci nebyl nalezen žádný řádek pro aktivní artikly.');
                         perModule.push({
                             label: slot.moduleConfig.label,
                             sheet: targetSheet,
@@ -625,8 +633,10 @@
                     }
 
                     var cashChunks = chunkRows(cashRows, 5000);
+                    AppLogger.info('Pokladní data: zápis do listu "' + targetSheet + '" po ' + cashChunks.length + ' dávkách.');
                     for (var ci = 0; ci < cashChunks.length; ci++) {
-                        setProgress(Math.round(((ci + 1) / cashChunks.length) * 100), 'Zápis: Pokladní data (' + cashRows.length + ' řádků)');
+                        updateImportProgress(moduleBase, moduleSpan, 30 + Math.round(((ci + 1) / cashChunks.length) * 70), 100,
+                            'Zápis Pokladní data: dávka ' + (ci + 1) + '/' + cashChunks.length);
                         var cashRes = await callServer('moduleImport_cashChunk', [JSON.stringify(cashChunks[ci]), targetSheet, {
                             isFirstChunk: ci === 0,
                             overwrite: overwrite,
@@ -634,6 +644,7 @@
                             startRow: ci === 0 ? undefined : (2 + ci * 5000)
                         }]);
                         if (!cashRes.success) throw new Error(cashRes.error);
+                        AppLogger.ok('Pokladní data: zapsána dávka ' + (ci + 1) + '/' + cashChunks.length + ' (' + cashChunks[ci].length + ' řádků).');
                     }
 
                     totalRows += cashRows.length;
@@ -646,13 +657,15 @@
                     continue;
                 }
 
-                setLoading(true, 'Parsuji...', slot.moduleConfig.label + ' · ' + file.name);
+                AppLogger.info(slot.moduleConfig.label + ': čtu soubor ' + file.name);
+                updateImportProgress(moduleBase, moduleSpan, 5, 100, 'Čtení: ' + slot.moduleConfig.label);
                 var workbook = await readWorkbook(file);
 
                 // Použijeme uživatelem vybraný list
                 var sourceSheetName = workbook.SheetNames[sourceSheetIdx] || workbook.SheetNames[0];
                 var rawData = XLSX.utils.sheet_to_json(workbook.Sheets[sourceSheetName], { header: 1, defval: "" });
-                setLoading(false);
+                AppLogger.info(slot.moduleConfig.label + ': načten zdrojový list "' + sourceSheetName + '" (' + rawData.length + ' řádků).');
+                updateImportProgress(moduleBase, moduleSpan, 20, 100, 'Příprava: ' + slot.moduleConfig.label);
 
                 // Filtrování prázdných řádků (volitelné přes toggle)
                 var data;
@@ -668,6 +681,7 @@
                 }
 
                 if (!data || data.length === 0) continue;
+                AppLogger.info(slot.moduleConfig.label + ': po vyčištění zbývá ' + data.length + ' řádků.');
 
                 var chunkSize = 5000;
                 var chunks = [];
@@ -689,6 +703,8 @@
                 if (!res.success) throw new Error(res.error);
                 nextStartRow = res.actualStartRow + firstClean.length;
                 totalRows += firstClean.length;
+                updateImportProgress(moduleBase, moduleSpan, 40, 100, 'Zápis: ' + slot.moduleConfig.label);
+                AppLogger.ok(slot.moduleConfig.label + ': zapsána první dávka (' + firstClean.length + ' řádků).');
 
                 // 2. Bezpečná souběžnost (po 2 dávkách)
                 var workerLimit = 2;
@@ -702,9 +718,11 @@
                         totalRows += cData.length;
                     }
 
-                    setProgress(Math.round(((i + 1) / queue.length) * 100), 'Zápis: ' + slot.moduleConfig.label + ' (' + totalRows + ' řádků)');
+                    updateImportProgress(moduleBase, moduleSpan, 40 + Math.round(((k + batch.length) / chunks.length) * 60), 100,
+                        'Zápis: ' + slot.moduleConfig.label + ' (' + totalRows + ' řádků)');
                     var results = await Promise.all(batchTasks.map(t => callServer('moduleImport_chunk', [JSON.stringify(t.data), targetSheet, { isFirstChunk: false, startRow: t.row }])));
                     results.forEach(r => { if (!r.success) throw new Error(r.error); });
+                    AppLogger.ok(slot.moduleConfig.label + ': zapsána dávka řádků, celkem zatím ' + totalRows + '.');
                 }
 
                 perModule.push({
@@ -774,6 +792,11 @@
             return { totalRows: totalRows, duration: duration, modules: perModule };
         }
 
+        function updateImportProgress(base, span, current, total, label) {
+            var pct = base + (span * (current / Math.max(total, 1)));
+            setProgress(Math.max(1, Math.min(99, Math.round(pct))), label);
+        }
+
         function showImportDone(result) {
             setTimeout(function () {
                 var rows = result.modules.map(function (m) {
@@ -789,33 +812,42 @@
             return String(name || '').replace(/[:\\/?*\[\]]/g, '_').substring(0, 31).trim();
         }
 
-        async function prepareCashRows(file) {
-            setLoading(true, 'Načítám aktivní artikly...', 'Vyhodnocení akce A6:A28');
+        async function prepareCashRows(file, moduleBase, moduleSpan) {
+            AppLogger.info('Pokladní data: načítám aktivní artikly z Vyhodnocení akce!A6:A28.');
+            updateImportProgress(moduleBase, moduleSpan, 3, 100, 'Kontrola aktivních artiklů');
             var articleRes = await callServer('moduleImport_getActiveArticles', []);
             if (!articleRes.success) throw new Error(articleRes.error);
 
             var active = {};
             (articleRes.articles || []).forEach(function (id) { active[String(id).trim()] = true; });
             if (Object.keys(active).length === 0) {
-                setLoading(false);
                 throw new Error('Na listu Vyhodnocení akce nejsou v buňkách A6:A28 žádné aktivní artikly.');
             }
+            AppLogger.ok('Pokladní data: aktivních artiklů k filtrování: ' + Object.keys(active).length + '.');
 
-            setLoading(true, 'Parsuji CSV...', file.name);
+            AppLogger.info('Pokladní data: čtu CSV soubor v kódování windows-1250: ' + file.name);
+            updateImportProgress(moduleBase, moduleSpan, 8, 100, 'Čtení CSV');
             var workbook = await readWorkbook(file);
             var sheetName = workbook.SheetNames[0];
             var rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '', raw: false });
-            setLoading(false);
+            AppLogger.info('Pokladní data: načteno ' + rows.length + ' řádků ze zdrojového CSV.');
+            updateImportProgress(moduleBase, moduleSpan, 18, 100, 'Filtrování CSV');
 
             var headerMap = null;
             var result = [];
+            var repeatedHeaders = 0;
+            var separators = 0;
             for (var r = 0; r < rows.length; r++) {
                 var row = rows[r] || [];
                 if (isCashHeaderRow(row)) {
                     headerMap = buildCashHeaderMap(row);
+                    repeatedHeaders++;
                     continue;
                 }
-                if (isCashSeparatorRow(row)) continue;
+                if (isCashSeparatorRow(row)) {
+                    separators++;
+                    continue;
+                }
                 if (!headerMap) continue;
 
                 var item = normalizeArticle(row[headerMap.ITEMNR]);
@@ -828,6 +860,10 @@
                     return value === undefined || value === null ? '' : String(value).trim();
                 }));
             }
+
+            AppLogger.info('Pokladní data: přeskočeno hlaviček ' + repeatedHeaders + ', oddělovacích/prázdných řádků ' + separators + '.');
+            AppLogger.ok('Pokladní data: po filtraci aktivních artiklů zbývá ' + result.length + ' řádků pro zápis.');
+            updateImportProgress(moduleBase, moduleSpan, 30, 100, 'CSV připraveno k zápisu');
 
             return result;
         }

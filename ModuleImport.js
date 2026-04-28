@@ -175,6 +175,7 @@ const ModuleImport = {
     if (options.isFirstChunk) {
       const maxRows = sheet.getMaxRows();
       if (maxRows > 1) {
+        AppLogger.info('Pokladní data: čistím oblast C:J od řádku 2 (' + (maxRows - 1) + ' řádků).');
         ModuleImport.clearCashData_(sheet, maxRows);
       }
     }
@@ -184,7 +185,9 @@ const ModuleImport = {
     const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
     const rowsToPrepare = Math.max(neededRows, preparedRows);
     if (rowsToPrepare > sheet.getMaxRows()) {
-      sheet.insertRowsAfter(sheet.getMaxRows(), rowsToPrepare - sheet.getMaxRows());
+      const rowsToAdd = rowsToPrepare - sheet.getMaxRows();
+      sheet.insertRowsAfter(sheet.getMaxRows(), rowsToAdd);
+      AppLogger.info('Pokladní data: rozšiřuji cílový list o ' + rowsToAdd + ' řádků.');
     }
 
     const firstCol = Math.min.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
@@ -206,6 +209,7 @@ const ModuleImport = {
           sheet.getRange(startRow, colMap[col], columnValues.length, 1).setValues(columnValues);
         });
       }
+      AppLogger.ok('Pokladní data: zapsáno ' + data.length + ' řádků od řádku ' + startRow + '.');
       return { success: true, count: data.length, actualStartRow: startRow };
     } catch (e) {
       return { success: false, error: 'Chyba zápisu pokladních dat: ' + e.message };
