@@ -585,6 +585,7 @@
             } catch (err) {
                 showResult('Chyba importu', 'Proces byl přerušen:<br>' + esc(err.message), '❌');
             } finally {
+                setLoading(false);
                 setBusy(false);
                 setProgress(0, '');
             }
@@ -790,6 +791,7 @@
             var active = {};
             (articleRes.articles || []).forEach(function (id) { active[String(id).trim()] = true; });
             if (Object.keys(active).length === 0) {
+                setLoading(false);
                 throw new Error('Na listu Vyhodnocení akce nejsou v buňkách A6:A28 žádné aktivní artikly.');
             }
 

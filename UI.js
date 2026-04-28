@@ -52,6 +52,16 @@ const UI = {
     }
     const showLcInHeader = String(config['showLcInHeader'] ?? '') !== 'false';
 
+    const currentWeek = Utils.getCurrentWeek();
+    const configuredWeek = parseInt(config['ktWeek'], 10);
+    const configuredYear = parseInt(config['ktYear'], 10);
+    if (!isNaN(configuredWeek) && configuredWeek >= 1 && configuredWeek <= 53) {
+      currentWeek.week = configuredWeek;
+    }
+    if (!isNaN(configuredYear) && configuredYear >= 2020 && configuredYear <= 2099) {
+      currentWeek.year = configuredYear;
+    }
+
     // Logo se NEZAHRNUJE do inicializačních dat — klient ho načte asynchronně
     // přes ui_getLogoChunks() aby se neblokovala inicializace Drive API voláním.
     return {
@@ -59,7 +69,7 @@ const UI = {
       userEmail: email,
       config: config,
       sheets: sheets,
-      currentWeek: Utils.getCurrentWeek(),
+      currentWeek: currentWeek,
       logTotal: logTotal,
       ktPref: ktPref,
       activeLcId: activeLcId,
