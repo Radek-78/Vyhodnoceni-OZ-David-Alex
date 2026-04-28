@@ -12,6 +12,8 @@ const _ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 
 const ModuleImport = {
 
+  CASH_COLUMNS: ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'],
+
   /**
    * Import datové dávky do listu
    * @param {string} jsonPayload - JSON řetězec s 2D polem dat
@@ -111,6 +113,96 @@ const ModuleImport = {
   },
 
   /**
+   * Aktivní artikly pro filtr pokladních dat.
+   * @returns {{success: boolean, articles?: string[], error?: string}}
+   */
+  getActiveArticles() {
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sheet = ss.getSheetByName('Vyhodnocení akce');
+      if (!sheet) return { success: false, error: 'List "Vyhodnocení akce" nebyl nalezen.' };
+
+      const values = sheet.getRange('A6:A28').getValues();
+      const articles = values
+        .map(row => ModuleImport.normalizeArticle_(row[0]))
+        .filter(value => value !== '');
+
+      return { success: true, articles: articles };
+    } catch (e) {
+      return { success: false, error: 'Nelze načíst aktivní artikly: ' + e.message };
+    }
+  },
+
+  /**
+   * Specializovaný zápis pokladních dat.
+   * Řádek 1 s hlavičkou v cílovém listu nikdy nemaže.
+   * @param {string} jsonPayload
+   * @param {string} sheetName
+   * @param {Object} options
+   * @returns {{success: boolean, count?: number, actualStartRow?: number, error?: string}}
+   */
+  importCashChunk(jsonPayload, sheetName, options) {
+    options = options || {};
+    let data;
+    try {
+      data = JSON.parse(jsonPayload);
+    } catch (e) {
+      return { success: false, error: 'Chyba při čtení pokladních dat: ' + e.message };
+    }
+
+    if (!data || data.length === 0) return { success: true, count: 0, actualStartRow: 2 };
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, ModuleImport.CASH_COLUMNS.length).setValues([ModuleImport.CASH_COLUMNS]);
+      sheet.setFrozenRows(1);
+    }
+
+    const header = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), ModuleImport.CASH_COLUMNS.length)).getValues()[0];
+    const colMap = ModuleImport.getCashTargetColumnMap_(header);
+    const missing = ModuleImport.CASH_COLUMNS.filter(col => !colMap[col]);
+    if (missing.length) {
+      return { success: false, error: 'V cílovém listu chybí sloupce: ' + missing.join(', ') };
+    }
+
+    if (options.isFirstChunk && options.overwrite) {
+      const maxRows = sheet.getMaxRows();
+      if (maxRows > 1) {
+        ModuleImport.clearCashData_(sheet, colMap, maxRows);
+      }
+    }
+
+    const startRow = options.startRow !== undefined ? Number(options.startRow) : Math.max(sheet.getLastRow() + 1, 2);
+    const neededRows = startRow + data.length - 1;
+    const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
+    const rowsToPrepare = Math.max(neededRows, preparedRows);
+    if (rowsToPrepare > sheet.getMaxRows()) {
+      sheet.insertRowsAfter(sheet.getMaxRows(), rowsToPrepare - sheet.getMaxRows());
+    }
+
+    const firstCol = Math.min.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
+    const lastCol = Math.max.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
+    const isContiguous = (lastCol - firstCol + 1) === ModuleImport.CASH_COLUMNS.length &&
+      ModuleImport.CASH_COLUMNS.every((col, idx) => colMap[col] === firstCol + idx);
+
+    try {
+      if (isContiguous) {
+        sheet.getRange(startRow, firstCol, data.length, ModuleImport.CASH_COLUMNS.length).setValues(data);
+      } else {
+        ModuleImport.CASH_COLUMNS.forEach((col, idx) => {
+          const columnValues = data.map(row => [row[idx]]);
+          sheet.getRange(startRow, colMap[col], columnValues.length, 1).setValues(columnValues);
+        });
+      }
+      return { success: true, count: data.length, actualStartRow: startRow };
+    } catch (e) {
+      return { success: false, error: 'Chyba zápisu pokladních dat: ' + e.message };
+    }
+  },
+
+  /**
    * Import souborů z Google Drive
    */
   importToDrive(fileIds, options) {
@@ -154,12 +246,51 @@ const ModuleImport = {
     const mime = parts[0].match(/:(.*?);/)[1];
     const decoded = Utilities.base64Decode(parts[1]);
     return Utilities.newBlob(decoded, mime, fileName);
+  },
+
+  getCashTargetColumnMap_(header) {
+    const map = {};
+    header.forEach((cell, idx) => {
+      const key = String(cell || '').trim().toUpperCase();
+      if (ModuleImport.CASH_COLUMNS.indexOf(key) !== -1) map[key] = idx + 1;
+    });
+    return map;
+  },
+
+  clearCashData_(sheet, colMap, maxRows) {
+    const firstCol = Math.min.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
+    const lastCol = Math.max.apply(null, ModuleImport.CASH_COLUMNS.map(col => colMap[col]));
+    const isContiguous = (lastCol - firstCol + 1) === ModuleImport.CASH_COLUMNS.length &&
+      ModuleImport.CASH_COLUMNS.every((col, idx) => colMap[col] === firstCol + idx);
+
+    if (isContiguous) {
+      sheet.getRange(2, firstCol, maxRows - 1, ModuleImport.CASH_COLUMNS.length).clearContent();
+    } else {
+      ModuleImport.CASH_COLUMNS.forEach(col => {
+        sheet.getRange(2, colMap[col], maxRows - 1, 1).clearContent();
+      });
+    }
+  },
+
+  normalizeArticle_(value) {
+    if (value === null || value === undefined) return '';
+    let text = String(value).trim();
+    if (/^\d+(\.0+)?$/.test(text)) text = String(parseInt(text, 10));
+    return text;
   }
 };
 
 /** API Wrappery */
 function moduleImport_chunk(data, sheetName, options) {
   return ModuleImport.importChunk(data, sheetName, options);
+}
+
+function moduleImport_getActiveArticles() {
+  return ModuleImport.getActiveArticles();
+}
+
+function moduleImport_cashChunk(data, sheetName, options) {
+  return ModuleImport.importCashChunk(data, sheetName, options);
 }
 
 function moduleImport_uploadToDrive(fileObj, options) {

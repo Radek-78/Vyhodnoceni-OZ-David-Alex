@@ -388,10 +388,12 @@
      */
     (function () {
         var IMPORT_MODULES = [
-            { key: 'cash', num: 1, icon: '💰', label: 'Pokladní data', accept: '.csv', hint: 'CSV', defaultSheet: 'Pokladní data' },
+            { key: 'cash', num: 1, icon: '💰', label: 'Pokladní data', accept: '.csv', hint: 'CSV', defaultSheet: 'Pokladni_data' },
             { key: 'mis', num: 2, icon: '📊', label: 'MIS prodej', accept: '.xlsx,.xls', hint: 'XLSX', defaultSheet: 'MIS prodej' },
             { key: 'fa', num: 3, icon: '📋', label: 'FA', accept: '.xlsx,.xls', hint: 'XLSX', defaultSheet: 'FA' }
         ];
+
+        var CASH_COLUMNS = ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'];
 
         if (!S._impSlots) {
             S._impSlots = IMPORT_MODULES.map(function (cfg) {
@@ -603,6 +605,40 @@
                 var overwrite = slot.overwrite !== false;
                 var nextStartRow = 1;
 
+                if (slot.moduleConfig.key === 'cash') {
+                    var cashRows = await prepareCashRows(file);
+                    if (!cashRows.length) {
+                        perModule.push({
+                            label: slot.moduleConfig.label,
+                            sheet: targetSheet,
+                            rows: 0,
+                            fileName: file.name
+                        });
+                        continue;
+                    }
+
+                    var cashChunks = chunkRows(cashRows, 5000);
+                    for (var ci = 0; ci < cashChunks.length; ci++) {
+                        setProgress(Math.round(((ci + 1) / cashChunks.length) * 100), 'Zápis: Pokladní data (' + cashRows.length + ' řádků)');
+                        var cashRes = await callServer('moduleImport_cashChunk', [JSON.stringify(cashChunks[ci]), targetSheet, {
+                            isFirstChunk: ci === 0,
+                            overwrite: overwrite,
+                            totalRows: cashRows.length,
+                            startRow: ci === 0 ? undefined : (2 + ci * 5000)
+                        }]);
+                        if (!cashRes.success) throw new Error(cashRes.error);
+                    }
+
+                    totalRows += cashRows.length;
+                    perModule.push({
+                        label: slot.moduleConfig.label,
+                        sheet: targetSheet,
+                        rows: cashRows.length,
+                        fileName: file.name
+                    });
+                    continue;
+                }
+
                 setLoading(true, 'Parsuji...', slot.moduleConfig.label + ' · ' + file.name);
                 var workbook = await readWorkbook(file);
 
@@ -744,6 +780,92 @@
 
         function sanitizeSheetName(name) {
             return String(name || '').replace(/[:\\/?*\[\]]/g, '_').substring(0, 31).trim();
+        }
+
+        async function prepareCashRows(file) {
+            setLoading(true, 'Načítám aktivní artikly...', 'Vyhodnocení akce A6:A28');
+            var articleRes = await callServer('moduleImport_getActiveArticles', []);
+            if (!articleRes.success) throw new Error(articleRes.error);
+
+            var active = {};
+            (articleRes.articles || []).forEach(function (id) { active[String(id).trim()] = true; });
+            if (Object.keys(active).length === 0) {
+                throw new Error('Na listu Vyhodnocení akce nejsou v buňkách A6:A28 žádné aktivní artikly.');
+            }
+
+            setLoading(true, 'Parsuji CSV...', file.name);
+            var workbook = await readWorkbook(file);
+            var sheetName = workbook.SheetNames[0];
+            var rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '', raw: false });
+            setLoading(false);
+
+            var headerMap = null;
+            var result = [];
+            for (var r = 0; r < rows.length; r++) {
+                var row = rows[r] || [];
+                if (isCashHeaderRow(row)) {
+                    headerMap = buildCashHeaderMap(row);
+                    continue;
+                }
+                if (isCashSeparatorRow(row)) continue;
+                if (!headerMap) continue;
+
+                var item = normalizeArticle(row[headerMap.ITEMNR]);
+                if (!item || !active[item]) continue;
+
+                result.push(CASH_COLUMNS.map(function (col) {
+                    var value = row[headerMap[col]];
+                    if (col === 'ITEMNR' || col === 'ITEMGROUP' || col === 'STORE') return normalizeArticle(value);
+                    if (col === 'ITEMCOUNT' || col === 'KG' || col === 'CZK') return normalizeNumber(value);
+                    return value === undefined || value === null ? '' : String(value).trim();
+                }));
+            }
+
+            return result;
+        }
+
+        function isCashHeaderRow(row) {
+            var seen = {};
+            row.forEach(function (cell) {
+                var key = String(cell || '').trim().toUpperCase();
+                if (key) seen[key] = true;
+            });
+            return CASH_COLUMNS.every(function (col) { return seen[col]; });
+        }
+
+        function buildCashHeaderMap(row) {
+            var map = {};
+            row.forEach(function (cell, idx) {
+                var key = String(cell || '').trim().toUpperCase();
+                if (CASH_COLUMNS.indexOf(key) !== -1) map[key] = idx;
+            });
+            return map;
+        }
+
+        function isCashSeparatorRow(row) {
+            var nonEmpty = row.filter(function (cell) { return String(cell || '').trim() !== ''; });
+            if (!nonEmpty.length) return true;
+            return nonEmpty.every(function (cell) { return /^-+$/.test(String(cell || '').trim()); });
+        }
+
+        function normalizeArticle(value) {
+            if (value === undefined || value === null) return '';
+            var text = String(value).trim();
+            if (/^\d+(\.0+)?$/.test(text)) text = String(parseInt(text, 10));
+            return text;
+        }
+
+        function normalizeNumber(value) {
+            if (value === undefined || value === null || value === '') return '';
+            var text = String(value).trim().replace(/\s/g, '').replace(',', '.');
+            var num = Number(text);
+            return isNaN(num) ? text : num;
+        }
+
+        function chunkRows(rows, size) {
+            var chunks = [];
+            for (var i = 0; i < rows.length; i += size) chunks.push(rows.slice(i, i + size));
+            return chunks;
         }
 
         function readWorkbook(file) {
