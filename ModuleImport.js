@@ -306,6 +306,7 @@ const ModuleImport = {
       const valueRange = Sheets.newValueRange();
       valueRange.values = normalizedData;
       Sheets.Spreadsheets.Values.update(valueRange, spreadsheetId, range, { valueInputOption: 'RAW' });
+      ModuleImport.applyMisFormats_(sheet, startRow, normalizedData.length, options);
 
       AppLogger.ok('MIS prodej: zapsáno ' + normalizedData.length + ' řádků od řádku ' + startRow + ' do B:L.');
       return { success: true, count: normalizedData.length, actualStartRow: startRow };
@@ -313,12 +314,33 @@ const ModuleImport = {
       AppLogger.error('MIS prodej: chyba V4 zápisu, zkouším setValues: ' + e.message);
       try {
         sheet.getRange(startRow, ModuleImport.MIS_FIRST_COLUMN, normalizedData.length, width).setValues(normalizedData);
+        ModuleImport.applyMisFormats_(sheet, startRow, normalizedData.length, options);
         AppLogger.ok('MIS prodej: zapsáno fallbackem ' + normalizedData.length + ' řádků od řádku ' + startRow + ' do B:L.');
         return { success: true, count: normalizedData.length, actualStartRow: startRow };
       } catch (err) {
         return { success: false, error: 'Chyba zápisu MIS prodej: ' + err.message };
       }
     }
+  },
+
+  applyMisFormats_(sheet, startRow, numRows, options) {
+    if (!numRows) return;
+    const integerIndexes = Array.isArray(options.integerTargetIndexes) ? options.integerTargetIndexes : [];
+    const dateIndexes = Array.isArray(options.dateTargetIndexes) ? options.dateTargetIndexes : [];
+
+    integerIndexes.forEach(offset => {
+      const col = ModuleImport.MIS_FIRST_COLUMN + Number(offset);
+      if (col >= ModuleImport.MIS_FIRST_COLUMN && col <= ModuleImport.MIS_LAST_COLUMN) {
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('0');
+      }
+    });
+
+    dateIndexes.forEach(offset => {
+      const col = ModuleImport.MIS_FIRST_COLUMN + Number(offset);
+      if (col >= ModuleImport.MIS_FIRST_COLUMN && col <= ModuleImport.MIS_LAST_COLUMN) {
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('d.m.yyyy');
+      }
+    });
   },
 
   /**

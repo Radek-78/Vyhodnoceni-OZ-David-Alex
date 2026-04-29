@@ -395,6 +395,7 @@
 
         var CASH_COLUMNS = ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'];
         var MIS_SPECIAL_HEADERS = ['Sklad O05', 'Artikly |02'];
+        var MIS_INTEGER_SOURCE_COLS = { 6: true, 7: true, 8: true, 10: true };
         var importRunning = false;
 
         if (!S._impSlots) {
@@ -662,7 +663,9 @@
                             isFirstChunk: mi === 0,
                             overwrite: overwrite,
                             totalRows: misRows.length,
-                            startRow: mi === 0 ? undefined : (2 + mi * 5000)
+                            startRow: mi === 0 ? undefined : (2 + mi * 5000),
+                            integerTargetIndexes: misRows.integerTargetIndexes || [],
+                            dateTargetIndexes: misRows.dateTargetIndexes || []
                         }]);
                         if (!misRes.success) throw new Error(misRes.error);
                         AppLogger.ok('MIS prodej: zapsána dávka ' + (mi + 1) + '/' + misChunks.length + ' (' + misChunks[mi].length + ' řádků).');
@@ -924,13 +927,15 @@
             for (var r = headerInfo.index + 1; r < rows.length; r++) {
                 var sourceRow = rows[r] || [];
                 if (!rowHasValue(sourceRow)) continue;
-                result.push(mapping.columns.map(function (sourceIdx) {
+                result.push(mapping.columns.map(function (sourceIdx, targetIdx) {
                     if (sourceIdx === null || sourceIdx === undefined) return '';
                     var value = sourceRow[sourceIdx];
-                    return cleanCellValue(value);
+                    return cleanMisCellValue(value, sourceIdx, targetHeaders[targetIdx]);
                 }));
             }
 
+            result.integerTargetIndexes = mapping.integerTargetIndexes;
+            result.dateTargetIndexes = mapping.dateTargetIndexes;
             AppLogger.ok('MIS prodej: připraveno ' + result.length + ' řádků pro zápis od řádku 2.');
             updateImportProgress(moduleBase, moduleSpan, 35, 100, 'MIS připraveno k zápisu');
             return result;
@@ -975,6 +980,8 @@
             var columns = [];
             var missing = [];
             var mappedCount = 0;
+            var integerTargetIndexes = [];
+            var dateTargetIndexes = [];
 
             for (var i = 0; i < targetHeaders.length; i++) {
                 var header = String(targetHeaders[i] || '').trim();
@@ -985,6 +992,7 @@
                     if (prevSourceIdx !== -1) {
                         columns.push(prevSourceIdx + 1);
                         mappedCount++;
+                        if (MIS_INTEGER_SOURCE_COLS[prevSourceIdx + 1]) integerTargetIndexes.push(i);
                     } else {
                         columns.push(null);
                     }
@@ -998,10 +1006,18 @@
                 } else {
                     columns.push(sourceIdx);
                     mappedCount++;
+                    if (MIS_INTEGER_SOURCE_COLS[sourceIdx]) integerTargetIndexes.push(i);
+                    if (normalizeHeader(header) === normalizeHeader('Den T01')) dateTargetIndexes.push(i);
                 }
             }
 
-            return { columns: columns, missing: missing, mappedCount: mappedCount };
+            return {
+                columns: columns,
+                missing: missing,
+                mappedCount: mappedCount,
+                integerTargetIndexes: integerTargetIndexes,
+                dateTargetIndexes: dateTargetIndexes
+            };
         }
 
         function findMisSourceColumn(sourceHeader, targetHeader) {
@@ -1039,12 +1055,62 @@
             });
         }
 
+        function cleanMisCellValue(value, sourceIdx, targetHeader) {
+            var cleaned = cleanCellValue(value);
+            if (normalizeHeader(targetHeader) === normalizeHeader('Den T01')) {
+                return formatMisDate(cleaned);
+            }
+            if (MIS_INTEGER_SOURCE_COLS[sourceIdx]) {
+                return normalizeMisInteger(cleaned);
+            }
+            return cleaned;
+        }
+
         function cleanCellValue(value) {
             if (value && typeof value === 'object' && 'v' in value && !(value instanceof Date)) value = value.v;
             if (value === undefined || value === null) return '';
             if (typeof value === 'string') return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
             if (typeof value === 'number' && !isFinite(value)) return '';
             return value;
+        }
+
+        function formatMisDate(value) {
+            if (value === undefined || value === null || value === '') return '';
+            if (value instanceof Date && !isNaN(value.getTime())) {
+                return value.getDate() + '.' + (value.getMonth() + 1) + '.' + value.getFullYear();
+            }
+
+            var text = String(value).trim();
+            var cz = text.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})$/);
+            if (cz) {
+                var first = Number(cz[1]);
+                var second = Number(cz[2]);
+                var year = normalizeMisYear(cz[3]);
+                if (second > 12 && first <= 12) return second + '.' + first + '.' + year;
+                return first + '.' + second + '.' + year;
+            }
+
+            var iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+            if (iso) return Number(iso[3]) + '.' + Number(iso[2]) + '.' + iso[1];
+
+            return text.replace(/\//g, '.');
+        }
+
+        function normalizeMisYear(year) {
+            var text = String(year || '').trim();
+            if (text.length === 2) return '20' + text;
+            return text;
+        }
+
+        function normalizeMisInteger(value) {
+            if (value === undefined || value === null || value === '') return '';
+            if (typeof value === 'number') return isFinite(value) ? Math.round(value) : '';
+
+            var text = String(value).trim();
+            if (!text) return '';
+            var normalized = text.replace(/[\s\u00A0\u202F,]/g, '');
+            if (/^-?\d+$/.test(normalized)) return Number(normalized);
+            return text;
         }
 
         function isCashHeaderRow(row) {
@@ -1101,7 +1167,7 @@
                             resolve(XLSX.read(e.target.result, { type: 'string', cellDates: true }));
                         } else {
                             var d = new Uint8Array(e.target.result);
-                            resolve(XLSX.read(d, { type: 'array', cellDates: true }));
+                            resolve(XLSX.read(d, { type: 'array', cellDates: true, dateNF: 'd.m.yyyy' }));
                         }
                     } catch (ex) {
                         reject(ex);
