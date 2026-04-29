@@ -375,6 +375,9 @@ const ModuleImport = {
     if (!numRows) return;
     const integerIndexes = Array.isArray(options.integerTargetIndexes) ? options.integerTargetIndexes : [];
     const dateIndexes = Array.isArray(options.dateTargetIndexes) ? options.dateTargetIndexes : [];
+    const timeIndexes = ModuleImport.getHeaderIndexes_(sheet, ModuleImport.MIS_FIRST_COLUMN, ModuleImport.MIS_LAST_COLUMN, header => {
+      return ModuleImport.normalizeHeader_(header).indexOf('cas posledniho odprodeje') !== -1;
+    });
 
     integerIndexes.forEach(offset => {
       const col = ModuleImport.MIS_FIRST_COLUMN + Number(offset);
@@ -388,6 +391,11 @@ const ModuleImport = {
       if (col >= ModuleImport.MIS_FIRST_COLUMN && col <= ModuleImport.MIS_LAST_COLUMN) {
         sheet.getRange(startRow, col, numRows, 1).setNumberFormat('d.m.yyyy');
       }
+    });
+
+    timeIndexes.forEach(offset => {
+      const col = ModuleImport.MIS_FIRST_COLUMN + Number(offset);
+      sheet.getRange(startRow, col, numRows, 1).setNumberFormat('h:mm');
     });
   },
 
@@ -499,12 +507,12 @@ const ModuleImport = {
   applyFaFormats_(sheet, startRow, numRows, options) {
     if (!numRows) return;
     const dateIndexes = Array.isArray(options.dateTargetIndexes) ? options.dateTargetIndexes : [];
-    const textIndexes = Array.isArray(options.textTargetIndexes) ? options.textTargetIndexes : [];
+    const itemIndexes = Array.isArray(options.itemTargetIndexes) ? options.itemTargetIndexes : [];
 
-    textIndexes.forEach(offset => {
+    itemIndexes.forEach(offset => {
       const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);
       if (col >= ModuleImport.FA_FIRST_COLUMN && col <= ModuleImport.FA_LAST_COLUMN) {
-        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('@');
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('00000');
       }
     });
 
@@ -592,6 +600,25 @@ const ModuleImport = {
   stripLeadingTextMarker_(value) {
     if (typeof value !== 'string') return value;
     return value.trim().replace(/^[\s'’‘`´]+/, '').trim();
+  },
+
+  getHeaderIndexes_(sheet, firstColumn, lastColumn, predicate) {
+    const width = lastColumn - firstColumn + 1;
+    const headers = sheet.getRange(1, firstColumn, 1, width).getValues()[0];
+    const indexes = [];
+    headers.forEach((header, idx) => {
+      if (predicate(header)) indexes.push(idx);
+    });
+    return indexes;
+  },
+
+  normalizeHeader_(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
   },
 
   normalizeArticle_(value) {

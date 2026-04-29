@@ -706,7 +706,7 @@
                             totalRows: faRows.length,
                             startRow: 2 + fi * 5000,
                             dateTargetIndexes: faRows.dateTargetIndexes || [],
-                            textTargetIndexes: faRows.textTargetIndexes || []
+                            itemTargetIndexes: faRows.itemTargetIndexes || []
                         }]);
                         if (!faRes.success) throw new Error(faRes.error);
                         AppLogger.ok('FA: zapsána dávka ' + (fi + 1) + '/' + faChunks.length + ' (' + faChunks[fi].length + ' řádků).');
@@ -1041,7 +1041,7 @@
             }
 
             result.dateTargetIndexes = mapping.dateTargetIndexes;
-            result.textTargetIndexes = mapping.textTargetIndexes;
+            result.itemTargetIndexes = mapping.itemTargetIndexes;
             AppLogger.ok('FA: připraveno ' + result.length + ' řádků pro zápis od řádku 2.');
             updateImportProgress(moduleBase, moduleSpan, 35, 100, 'FA připraveno k zápisu');
             return result;
@@ -1107,7 +1107,7 @@
             var missing = [];
             var mappedCount = 0;
             var dateTargetIndexes = [];
-            var textTargetIndexes = [];
+            var itemTargetIndexes = [];
 
             for (var i = 0; i < targetHeaders.length; i++) {
                 var header = String(targetHeaders[i] || '').trim();
@@ -1131,7 +1131,7 @@
                     columns.push(sourceIdx);
                     mappedCount++;
                     if (normalizeHeader(header) === normalizeHeader('Entrydate')) dateTargetIndexes.push(i);
-                    if (normalizeHeader(header) === normalizeHeader('Item')) textTargetIndexes.push(i);
+                    if (normalizeHeader(header) === normalizeHeader('Item')) itemTargetIndexes.push(i);
                 }
             }
 
@@ -1140,7 +1140,7 @@
                 missing: missing,
                 mappedCount: mappedCount,
                 dateTargetIndexes: dateTargetIndexes,
-                textTargetIndexes: textTargetIndexes
+                itemTargetIndexes: itemTargetIndexes
             };
         }
 
@@ -1210,6 +1210,7 @@
                     columns.push(sourceIdx);
                     mappedCount++;
                     if (MIS_INTEGER_SOURCE_COLS[sourceIdx]) integerTargetIndexes.push(i);
+                    if (getMisSpecialKey(header)) integerTargetIndexes.push(i);
                     if (normalizeHeader(header) === normalizeHeader('Den T01')) dateTargetIndexes.push(i);
                 }
             }
@@ -1267,7 +1268,10 @@
             if (normalizeHeader(targetHeader) === normalizeHeader('Den T01')) {
                 return formatMisDate(cleaned);
             }
-            if (MIS_INTEGER_SOURCE_COLS[sourceIdx]) {
+            if (isMisTimeHeader(targetHeader)) {
+                return normalizeSheetTime(cleaned);
+            }
+            if (MIS_INTEGER_SOURCE_COLS[sourceIdx] || getMisSpecialKey(targetHeader)) {
                 return normalizeMisInteger(cleaned);
             }
             return cleaned;
@@ -1290,7 +1294,30 @@
             if (/^\d+(\.0+)?$/.test(text)) text = String(parseInt(text, 10));
             text = text.replace(/\D/g, '');
             if (!text) return '';
-            return text.slice(-5).padStart(5, '0');
+            return Number(text.slice(-5));
+        }
+
+        function isMisTimeHeader(header) {
+            var normalized = normalizeHeader(header).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            return normalized.indexOf('cas posledniho odprodeje') !== -1;
+        }
+
+        function normalizeSheetTime(value) {
+            if (value === undefined || value === null || value === '') return '';
+            if (value instanceof Date && !isNaN(value.getTime())) {
+                return (value.getHours() * 60 + value.getMinutes()) / 1440;
+            }
+            if (typeof value === 'number') return value;
+
+            var text = String(value).trim();
+            var match = text.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+            if (!match) return text;
+
+            var hours = Number(match[1]);
+            var minutes = Number(match[2]);
+            var seconds = Number(match[3] || 0);
+            if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) return text;
+            return (hours * 3600 + minutes * 60 + seconds) / 86400;
         }
 
         function cleanCellValue(value) {
