@@ -19,6 +19,8 @@ const ModuleImport = {
   CASH_CLEAR_LAST_COLUMN: 10,
   MIS_FIRST_COLUMN: 2,
   MIS_LAST_COLUMN: 12,
+  FA_FIRST_COLUMN: 4,
+  FA_LAST_COLUMN: 10,
 
   /**
    * Import datové dávky do listu
@@ -344,6 +346,123 @@ const ModuleImport = {
   },
 
   /**
+   * Hlavičky cílového listu FA v rozsahu D1:J1.
+   * @param {string} sheetName
+   * @returns {{success: boolean, headers?: string[], error?: string}}
+   */
+  getFaTargetHeaders(sheetName) {
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sheet = ss.getSheetByName(sheetName);
+      if (!sheet) return { success: false, error: 'List "' + sheetName + '" nebyl nalezen.' };
+
+      const width = ModuleImport.FA_LAST_COLUMN - ModuleImport.FA_FIRST_COLUMN + 1;
+      const headers = sheet.getRange(1, ModuleImport.FA_FIRST_COLUMN, 1, width).getValues()[0]
+        .map(value => String(value || '').trim());
+      const hasHeader = headers.some(value => value !== '');
+      if (!hasHeader) return { success: false, error: 'V listu "' + sheetName + '" nejsou v D1:J1 vyplněné hlavičky.' };
+
+      return { success: true, headers: headers };
+    } catch (e) {
+      return { success: false, error: 'Nelze načíst hlavičky FA: ' + e.message };
+    }
+  },
+
+  /**
+   * Specializovaný zápis FA.
+   * Cílový řádek 1 nikdy nemaže; data zapisuje pouze do D:J od řádku 2.
+   * @param {string} jsonPayload
+   * @param {string} sheetName
+   * @param {Object} options
+   * @returns {{success: boolean, count?: number, actualStartRow?: number, error?: string}}
+   */
+  importFaChunk(jsonPayload, sheetName, options) {
+    options = options || {};
+    let data;
+    try {
+      data = JSON.parse(jsonPayload);
+      data = data.map(row => row.map(val => {
+        if (typeof val === 'string' && _ISO_DATE_RE.test(val)) {
+          const d = new Date(val);
+          return isNaN(d.getTime()) ? val : d;
+        }
+        return val;
+      }));
+    } catch (e) {
+      return { success: false, error: 'Chyba při čtení dat FA: ' + e.message };
+    }
+
+    if (!data || data.length === 0) return { success: true, count: 0, actualStartRow: 2 };
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return { success: false, error: 'Cílový list "' + sheetName + '" nebyl nalezen.' };
+
+    const width = ModuleImport.FA_LAST_COLUMN - ModuleImport.FA_FIRST_COLUMN + 1;
+    if (options.isFirstChunk) {
+      const maxRows = sheet.getMaxRows();
+      if (maxRows > 1) {
+        AppLogger.info('FA: čistím oblast D:J od řádku 2 (' + (maxRows - 1) + ' řádků).');
+        sheet.getRange(2, ModuleImport.FA_FIRST_COLUMN, maxRows - 1, width).clearContent();
+      }
+    }
+
+    const startRow = options.startRow !== undefined ? Number(options.startRow) : 2;
+    const neededRows = startRow + data.length - 1;
+    const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
+    const rowsToPrepare = Math.max(neededRows, preparedRows);
+    if (rowsToPrepare > sheet.getMaxRows()) {
+      const rowsToAdd = rowsToPrepare - sheet.getMaxRows();
+      sheet.insertRowsAfter(sheet.getMaxRows(), rowsToAdd);
+      AppLogger.info('FA: rozšiřuji cílový list o ' + rowsToAdd + ' řádků.');
+    }
+
+    const normalizedData = data.map(row => {
+      const normalized = (Array.isArray(row) ? row.slice(0, width) : []);
+      while (normalized.length < width) normalized.push('');
+      return normalized;
+    });
+
+    try {
+      const spreadsheetId = ss.getId();
+      const startCol = Utils.columnToLetter(ModuleImport.FA_FIRST_COLUMN);
+      const endCol = Utils.columnToLetter(ModuleImport.FA_LAST_COLUMN);
+      const safeSheetName = "'" + String(sheetName).replace(/'/g, "''") + "'";
+      const range = safeSheetName + '!' + startCol + startRow + ':' + endCol + (startRow + normalizedData.length - 1);
+
+      const valueRange = Sheets.newValueRange();
+      valueRange.values = normalizedData;
+      Sheets.Spreadsheets.Values.update(valueRange, spreadsheetId, range, { valueInputOption: 'RAW' });
+      ModuleImport.applyFaFormats_(sheet, startRow, normalizedData.length, options);
+
+      AppLogger.ok('FA: zapsáno ' + normalizedData.length + ' řádků od řádku ' + startRow + ' do D:J.');
+      return { success: true, count: normalizedData.length, actualStartRow: startRow };
+    } catch (e) {
+      AppLogger.error('FA: chyba V4 zápisu, zkouším setValues: ' + e.message);
+      try {
+        sheet.getRange(startRow, ModuleImport.FA_FIRST_COLUMN, normalizedData.length, width).setValues(normalizedData);
+        ModuleImport.applyFaFormats_(sheet, startRow, normalizedData.length, options);
+        AppLogger.ok('FA: zapsáno fallbackem ' + normalizedData.length + ' řádků od řádku ' + startRow + ' do D:J.');
+        return { success: true, count: normalizedData.length, actualStartRow: startRow };
+      } catch (err) {
+        return { success: false, error: 'Chyba zápisu FA: ' + err.message };
+      }
+    }
+  },
+
+  applyFaFormats_(sheet, startRow, numRows, options) {
+    if (!numRows) return;
+    const dateIndexes = Array.isArray(options.dateTargetIndexes) ? options.dateTargetIndexes : [];
+
+    dateIndexes.forEach(offset => {
+      const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);
+      if (col >= ModuleImport.FA_FIRST_COLUMN && col <= ModuleImport.FA_LAST_COLUMN) {
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('d.m.yyyy');
+      }
+    });
+  },
+
+  /**
    * Import souborů z Google Drive
    */
   importToDrive(fileIds, options) {
@@ -433,6 +552,14 @@ function moduleImport_getMisTargetHeaders(sheetName) {
 
 function moduleImport_misChunk(data, sheetName, options) {
   return ModuleImport.importMisChunk(data, sheetName, options);
+}
+
+function moduleImport_getFaTargetHeaders(sheetName) {
+  return ModuleImport.getFaTargetHeaders(sheetName);
+}
+
+function moduleImport_faChunk(data, sheetName, options) {
+  return ModuleImport.importFaChunk(data, sheetName, options);
 }
 
 function moduleImport_uploadToDrive(fileObj, options) {

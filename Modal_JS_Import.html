@@ -680,6 +680,45 @@
                     continue;
                 }
 
+                if (slot.moduleConfig.key === 'fa') {
+                    var faRows = await prepareFaRows(file, targetSheet, sourceSheetIdx, moduleBase, moduleSpan);
+                    if (!faRows.length) {
+                        AppLogger.warn('FA: ve zdrojovém souboru nebyla nalezena žádná data pod hlavičkou.');
+                        perModule.push({
+                            label: slot.moduleConfig.label,
+                            sheet: targetSheet,
+                            rows: 0,
+                            fileName: file.name
+                        });
+                        continue;
+                    }
+
+                    var faChunks = chunkRows(faRows, 5000);
+                    AppLogger.info('FA: zápis do listu "' + targetSheet + '" po ' + faChunks.length + ' dávkách.');
+                    for (var fi = 0; fi < faChunks.length; fi++) {
+                        updateImportProgress(moduleBase, moduleSpan, 35 + Math.round(((fi + 1) / faChunks.length) * 65), 100,
+                            'Zápis FA: dávka ' + (fi + 1) + '/' + faChunks.length);
+                        var faRes = await callServer('moduleImport_faChunk', [JSON.stringify(faChunks[fi]), targetSheet, {
+                            isFirstChunk: fi === 0,
+                            overwrite: overwrite,
+                            totalRows: faRows.length,
+                            startRow: fi === 0 ? undefined : (2 + fi * 5000),
+                            dateTargetIndexes: faRows.dateTargetIndexes || []
+                        }]);
+                        if (!faRes.success) throw new Error(faRes.error);
+                        AppLogger.ok('FA: zapsána dávka ' + (fi + 1) + '/' + faChunks.length + ' (' + faChunks[fi].length + ' řádků).');
+                    }
+
+                    totalRows += faRows.length;
+                    perModule.push({
+                        label: slot.moduleConfig.label,
+                        sheet: targetSheet,
+                        rows: faRows.length,
+                        fileName: file.name
+                    });
+                    continue;
+                }
+
                 AppLogger.info(slot.moduleConfig.label + ': čtu soubor ' + file.name);
                 updateImportProgress(moduleBase, moduleSpan, 5, 100, 'Čtení: ' + slot.moduleConfig.label);
                 var workbook = await readWorkbook(file);
@@ -940,6 +979,54 @@
             return result;
         }
 
+        async function prepareFaRows(file, targetSheet, sourceSheetIdx, moduleBase, moduleSpan) {
+            AppLogger.info('FA: načítám cílové hlavičky z listu "' + targetSheet + '" v rozsahu D1:J1.');
+            updateImportProgress(moduleBase, moduleSpan, 3, 100, 'Kontrola hlaviček FA');
+            var targetRes = await callServer('moduleImport_getFaTargetHeaders', [targetSheet]);
+            if (!targetRes.success) throw new Error(targetRes.error);
+
+            var targetHeaders = targetRes.headers || [];
+            if (!targetHeaders.length) throw new Error('FA: cílový list nemá v rozsahu D1:J1 žádné hlavičky.');
+            AppLogger.info('FA: cílové sloupce D:J načteny (' + targetHeaders.length + ' sloupců).');
+
+            AppLogger.info('FA: čtu XLSX soubor ' + file.name + '.');
+            updateImportProgress(moduleBase, moduleSpan, 8, 100, 'Čtení XLSX');
+            var workbook = await readWorkbook(file);
+            var sourceSheetName = workbook.SheetNames[sourceSheetIdx] || workbook.SheetNames[0];
+            var rows = XLSX.utils.sheet_to_json(workbook.Sheets[sourceSheetName], { header: 1, defval: '', raw: false });
+            AppLogger.info('FA: načten zdrojový list "' + sourceSheetName + '" (' + rows.length + ' řádků).');
+
+            updateImportProgress(moduleBase, moduleSpan, 18, 100, 'Hledání hlavičky FA');
+            var headerInfo = findFaHeaderRow(rows, targetHeaders);
+            if (!headerInfo) {
+                throw new Error('FA: ve zdrojovém souboru nebyla nalezena hlavička odpovídající cílovému listu.');
+            }
+
+            AppLogger.ok('FA: hlavička nalezena na řádku ' + (headerInfo.index + 1) + ' se shodou ' + headerInfo.score + ' sloupců.');
+            var mapping = buildFaColumnMapping(headerInfo.row, targetHeaders);
+            if (mapping.missing.length) {
+                throw new Error('FA: ve zdrojové hlavičce chybí sloupce: ' + mapping.missing.join(', '));
+            }
+            AppLogger.info('FA: namapováno ' + mapping.mappedCount + ' cílových sloupců v rozsahu D:J.');
+
+            updateImportProgress(moduleBase, moduleSpan, 28, 100, 'Příprava dat FA');
+            var result = [];
+            for (var r = headerInfo.index + 1; r < rows.length; r++) {
+                var sourceRow = rows[r] || [];
+                if (!rowHasValue(sourceRow)) continue;
+                result.push(mapping.columns.map(function (sourceIdx, targetIdx) {
+                    if (sourceIdx === null || sourceIdx === undefined) return '';
+                    var value = sourceRow[sourceIdx];
+                    return cleanFaCellValue(value, targetHeaders[targetIdx]);
+                }));
+            }
+
+            result.dateTargetIndexes = mapping.dateTargetIndexes;
+            AppLogger.ok('FA: připraveno ' + result.length + ' řádků pro zápis od řádku 2.');
+            updateImportProgress(moduleBase, moduleSpan, 35, 100, 'FA připraveno k zápisu');
+            return result;
+        }
+
         function findMisHeaderRow(rows, targetHeaders) {
             var requiredScore = getMisRequiredHeaderCount(targetHeaders);
             var expectedIdx = 6;
@@ -964,6 +1051,93 @@
             return targetHeaders.filter(function (header) {
                 return String(header || '').trim() !== '';
             }).length;
+        }
+
+        function findFaHeaderRow(rows, targetHeaders) {
+            var requiredScore = getMisRequiredHeaderCount(targetHeaders);
+            var expectedIdx = 2;
+            if (rows[expectedIdx]) {
+                var expectedScore = scoreFaHeaderRow(rows[expectedIdx], targetHeaders);
+                if (expectedScore >= requiredScore) {
+                    return { index: expectedIdx, row: rows[expectedIdx], score: expectedScore };
+                }
+            }
+
+            var best = null;
+            for (var r = 0; r < rows.length; r++) {
+                var score = scoreFaHeaderRow(rows[r] || [], targetHeaders);
+                if (!best || score > best.score) {
+                    best = { index: r, row: rows[r] || [], score: score };
+                }
+            }
+            return best && best.score > 0 ? best : null;
+        }
+
+        function scoreFaHeaderRow(sourceHeader, targetHeaders) {
+            var score = 0;
+            targetHeaders.forEach(function (header) {
+                if (!String(header || '').trim()) return;
+                if (findFaSourceColumn(sourceHeader, header) !== -1) score++;
+            });
+            return score;
+        }
+
+        function buildFaColumnMapping(sourceHeader, targetHeaders) {
+            var columns = [];
+            var missing = [];
+            var mappedCount = 0;
+            var dateTargetIndexes = [];
+
+            for (var i = 0; i < targetHeaders.length; i++) {
+                var header = String(targetHeaders[i] || '').trim();
+                if (!header) {
+                    var prevHeader = String(targetHeaders[i - 1] || '').trim();
+                    var prevSourceIdx = isFaItemHeader(prevHeader) ? findFaSourceColumn(sourceHeader, prevHeader) : -1;
+                    if (prevSourceIdx !== -1) {
+                        columns.push(prevSourceIdx + 1);
+                        mappedCount++;
+                    } else {
+                        columns.push(null);
+                    }
+                    continue;
+                }
+
+                var sourceIdx = findFaSourceColumn(sourceHeader, header);
+                if (sourceIdx === -1) {
+                    missing.push(header);
+                    columns.push(null);
+                } else {
+                    columns.push(sourceIdx);
+                    mappedCount++;
+                    if (normalizeHeader(header) === normalizeHeader('Entrydate')) dateTargetIndexes.push(i);
+                }
+            }
+
+            return {
+                columns: columns,
+                missing: missing,
+                mappedCount: mappedCount,
+                dateTargetIndexes: dateTargetIndexes
+            };
+        }
+
+        function findFaSourceColumn(sourceHeader, targetHeader) {
+            var target = normalizeHeader(targetHeader);
+            var itemHeader = isFaItemHeader(targetHeader);
+            var fallback = -1;
+
+            for (var i = 0; i < sourceHeader.length; i++) {
+                var source = normalizeHeader(sourceHeader[i]);
+                if (!source) continue;
+                if (source === target) return i;
+                if (itemHeader && isFaItemHeader(sourceHeader[i])) fallback = i;
+            }
+
+            return fallback;
+        }
+
+        function isFaItemHeader(header) {
+            return normalizeHeader(header) === normalizeHeader('Item');
         }
 
         function scoreMisHeaderRow(sourceHeader, targetHeaders) {
@@ -1065,6 +1239,14 @@
             }
             if (MIS_INTEGER_SOURCE_COLS[sourceIdx]) {
                 return normalizeMisInteger(cleaned);
+            }
+            return cleaned;
+        }
+
+        function cleanFaCellValue(value, targetHeader) {
+            var cleaned = cleanCellValue(value);
+            if (normalizeHeader(targetHeader) === normalizeHeader('Entrydate')) {
+                return formatMisDate(cleaned);
             }
             return cleaned;
         }
