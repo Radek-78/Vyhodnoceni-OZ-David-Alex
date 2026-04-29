@@ -1279,9 +1279,16 @@
         function cleanCellValue(value) {
             if (value && typeof value === 'object' && 'v' in value && !(value instanceof Date)) value = value.v;
             if (value === undefined || value === null) return '';
-            if (typeof value === 'string') return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/^'/, '').trim();
+            if (typeof value === 'string') return stripLeadingTextMarker(value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''));
             if (typeof value === 'number' && !isFinite(value)) return '';
             return value;
+        }
+
+        function stripLeadingTextMarker(value) {
+            return String(value || '')
+                .trim()
+                .replace(/^[\s'’‘`´]+/, '')
+                .trim();
         }
 
         function formatMisDate(value) {

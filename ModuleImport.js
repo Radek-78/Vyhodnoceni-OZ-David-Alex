@@ -339,7 +339,7 @@ const ModuleImport = {
     }
 
     const normalizedData = data.map(row => {
-      const normalized = (Array.isArray(row) ? row.slice(0, width) : []);
+      const normalized = (Array.isArray(row) ? row.slice(0, width).map(ModuleImport.stripLeadingTextMarker_) : []);
       while (normalized.length < width) normalized.push('');
       return normalized;
     });
@@ -464,7 +464,7 @@ const ModuleImport = {
     }
 
     const normalizedData = data.map(row => {
-      const normalized = (Array.isArray(row) ? row.slice(0, width) : []);
+      const normalized = (Array.isArray(row) ? row.slice(0, width).map(ModuleImport.stripLeadingTextMarker_) : []);
       while (normalized.length < width) normalized.push('');
       return normalized;
     });
@@ -579,6 +579,11 @@ const ModuleImport = {
     AppLogger.info(label + ': krok čištění ' + Utils.columnToLetter(firstColumn) + ':' + Utils.columnToLetter(lastColumn) +
       ' od řádku 2 (' + (maxRows - 1) + ' řádků).');
     sheet.getRange(2, firstColumn, maxRows - 1, width).clearContent();
+  },
+
+  stripLeadingTextMarker_(value) {
+    if (typeof value !== 'string') return value;
+    return value.trim().replace(/^[\s'’‘`´]+/, '').trim();
   },
 
   normalizeArticle_(value) {
