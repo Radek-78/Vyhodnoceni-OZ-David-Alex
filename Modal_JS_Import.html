@@ -1092,7 +1092,7 @@
                 var header = String(targetHeaders[i] || '').trim();
                 if (!header) {
                     var prevHeader = String(targetHeaders[i - 1] || '').trim();
-                    var prevSourceIdx = isFaItemHeader(prevHeader) ? findFaSourceColumn(sourceHeader, prevHeader) : -1;
+                    var prevSourceIdx = isFaPairedHeader(prevHeader) ? findFaSourceColumn(sourceHeader, prevHeader) : -1;
                     if (prevSourceIdx !== -1) {
                         columns.push(prevSourceIdx + 1);
                         mappedCount++;
@@ -1123,21 +1123,28 @@
 
         function findFaSourceColumn(sourceHeader, targetHeader) {
             var target = normalizeHeader(targetHeader);
-            var itemHeader = isFaItemHeader(targetHeader);
+            var pairedHeader = isFaPairedHeader(targetHeader);
             var fallback = -1;
 
             for (var i = 0; i < sourceHeader.length; i++) {
                 var source = normalizeHeader(sourceHeader[i]);
                 if (!source) continue;
                 if (source === target) return i;
-                if (itemHeader && isFaItemHeader(sourceHeader[i])) fallback = i;
+                if (pairedHeader && getFaPairedKey(sourceHeader[i]) === getFaPairedKey(targetHeader)) fallback = i;
             }
 
             return fallback;
         }
 
-        function isFaItemHeader(header) {
-            return normalizeHeader(header) === normalizeHeader('Item');
+        function isFaPairedHeader(header) {
+            return getFaPairedKey(header) !== '';
+        }
+
+        function getFaPairedKey(header) {
+            var normalized = normalizeHeader(header);
+            if (normalized === normalizeHeader('Item')) return 'item';
+            if (normalized === normalizeHeader('Warehouse')) return 'warehouse';
+            return '';
         }
 
         function scoreMisHeaderRow(sourceHeader, targetHeaders) {
@@ -1254,7 +1261,7 @@
         function cleanCellValue(value) {
             if (value && typeof value === 'object' && 'v' in value && !(value instanceof Date)) value = value.v;
             if (value === undefined || value === null) return '';
-            if (typeof value === 'string') return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+            if (typeof value === 'string') return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/^'/, '').trim();
             if (typeof value === 'number' && !isFinite(value)) return '';
             return value;
         }
