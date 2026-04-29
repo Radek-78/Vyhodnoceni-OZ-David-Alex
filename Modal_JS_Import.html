@@ -394,7 +394,6 @@
         ];
 
         var CASH_COLUMNS = ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'];
-        var MIS_SPECIAL_HEADERS = ['Sklad O05', 'Artikly |02'];
         var MIS_INTEGER_SOURCE_COLS = { 6: true, 7: true, 8: true, 10: true };
         var importRunning = false;
 
@@ -1022,24 +1021,28 @@
 
         function findMisSourceColumn(sourceHeader, targetHeader) {
             var target = normalizeHeader(targetHeader);
-            var isSpecial = isMisSpecialHeader(targetHeader);
+            var specialKey = getMisSpecialKey(targetHeader);
             var fallback = -1;
 
             for (var i = 0; i < sourceHeader.length; i++) {
                 var source = normalizeHeader(sourceHeader[i]);
                 if (!source) continue;
                 if (source === target) return i;
-                if (isSpecial && source.indexOf(target) !== -1) fallback = i;
+                if (specialKey && getMisSpecialKey(sourceHeader[i]) === specialKey) fallback = i;
             }
 
             return fallback;
         }
 
         function isMisSpecialHeader(header) {
+            return getMisSpecialKey(header) !== '';
+        }
+
+        function getMisSpecialKey(header) {
             var normalized = normalizeHeader(header);
-            return MIS_SPECIAL_HEADERS.some(function (special) {
-                return normalized === normalizeHeader(special) || normalized.indexOf(normalizeHeader(special)) !== -1;
-            });
+            if (normalized.indexOf('sklad o05') !== -1) return 'sklad_o05';
+            if (normalized.indexOf('artikly |02') !== -1 || normalized.indexOf('artikl |02') !== -1) return 'artikl_02';
+            return '';
         }
 
         function normalizeHeader(value) {
