@@ -395,6 +395,7 @@
 
         var CASH_COLUMNS = ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'];
         var MIS_SPECIAL_HEADERS = ['Sklad O05', 'Artikly |02'];
+        var importRunning = false;
 
         if (!S._impSlots) {
             S._impSlots = IMPORT_MODULES.map(function (cfg) {
@@ -406,14 +407,9 @@
             IMPORT_MODULES.forEach(function (cfg, i) {
                 if (!S._impSlots[i]) S._impSlots[i] = {};
                 if (!S._impSlots[i].targetSheet) S._impSlots[i].targetSheet = cfg.defaultSheet;
-                if (S._impSlots[i].overwrite === undefined) S._impSlots[i].overwrite = true;
-                if (cfg.key === 'cash') S._impSlots[i].overwrite = true;
+                S._impSlots[i].overwrite = true;
                 if (S._impSlots[i].sheetIdx === undefined) S._impSlots[i].sheetIdx = 0;
             });
-        }
-
-        function imToggle(id, on) {
-            return '<div class="tgl-track' + (on ? ' on' : '') + '" id="' + id + '"></div>';
         }
 
         window.vImport = function (m) {
@@ -452,13 +448,6 @@
                 html += '<div class="im-config-card" style="margin-top:10px">';
                 html += '<div class="im-config-hd"><span class="im-config-icon">' + cfg.icon + '</span><span class="im-config-title">' + esc(cfg.label) + '</span></div>';
                 html += fg('Cílový list', '<input type="text" class="fg-input" id="fImpSheet' + i + '" value="' + esc(s.targetSheet || cfg.defaultSheet) + '" oninput="imSetTargetSheet(' + i + ', this.value)">');
-                html += '<div class="im-tgl" onclick="imToggleOverwrite(' + i + ')">' +
-                    '<div class="im-tgl-info">' +
-                    '<span class="im-tgl-label">Přepsat data</span>' +
-                    '<span class="im-tgl-desc">' + (cfg.key === 'cash' ? 'Automaticky vyčistí C:J od řádku 2' : 'Vymaže cílový list před zápisem tohoto modulu') + '</span>' +
-                    '</div>' +
-                    imToggle('fImpOverwrite' + i, s.overwrite !== false) +
-                    '</div>';
 
                 if (s.sheetNames && s.sheetNames.length > 1) {
                     html += '<div class="fg" style="margin-top:10px">' +
@@ -492,15 +481,6 @@
         };
         window.imSetTargetSheet = function (i, value) {
             S._impSlots[i].targetSheet = value;
-        };
-        window.imToggleOverwrite = function (i) {
-            if (IMPORT_MODULES[i] && IMPORT_MODULES[i].key === 'cash') {
-                S._impSlots[i].overwrite = true;
-                render();
-                return;
-            }
-            S._impSlots[i].overwrite = !(S._impSlots[i].overwrite !== false);
-            render();
         };
         window.imDrag = function (e, over, i) {
             e.preventDefault();
@@ -565,7 +545,7 @@
         };
 
         window.execImport = async function () {
-            if (S.busy) return;
+            if (S.busy || importRunning) return;
             imEnsureState();
             var queue = S._impSlots
                 .map(function (slot, idx) {
@@ -582,6 +562,7 @@
                 }
             }
 
+            importRunning = true;
             var startTime = performance.now();
             AppLogger.info('🚀 Start importu: ' + queue.length + ' souborů.');
             setProgress(1, 'Start importu');
@@ -597,6 +578,7 @@
                 AppLogger.error('Import přerušen: ' + err.message);
                 showResult('Chyba importu', 'Proces byl přerušen:<br>' + esc(err.message), '❌');
             } finally {
+                importRunning = false;
                 setBusy(false);
                 if (completed) setTimeout(function () { setProgress(0, ''); }, 4000);
                 else setProgress(0, '');
@@ -822,7 +804,7 @@
             S._impSlots = IMPORT_MODULES.map(function (cfg, idx) {
                 return {
                     targetSheet: (S._impSlots[idx] && S._impSlots[idx].targetSheet) || cfg.defaultSheet,
-                    overwrite: S._impSlots[idx] ? S._impSlots[idx].overwrite !== false : true,
+                    overwrite: true,
                     sheetIdx: 0
                 };
             });
