@@ -17,6 +17,8 @@ const ModuleImport = {
   CASH_FIRST_DATA_COLUMN: 4,
   CASH_CLEAR_FIRST_COLUMN: 3,
   CASH_CLEAR_LAST_COLUMN: 10,
+  MIS_FIRST_COLUMN: 2,
+  MIS_LAST_COLUMN: 12,
 
   /**
    * Import datové dávky do listu
@@ -217,6 +219,109 @@ const ModuleImport = {
   },
 
   /**
+   * Hlavičky cílového listu MIS prodej v rozsahu B1:L1.
+   * @param {string} sheetName
+   * @returns {{success: boolean, headers?: string[], error?: string}}
+   */
+  getMisTargetHeaders(sheetName) {
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sheet = ss.getSheetByName(sheetName);
+      if (!sheet) return { success: false, error: 'List "' + sheetName + '" nebyl nalezen.' };
+
+      const width = ModuleImport.MIS_LAST_COLUMN - ModuleImport.MIS_FIRST_COLUMN + 1;
+      const headers = sheet.getRange(1, ModuleImport.MIS_FIRST_COLUMN, 1, width).getValues()[0]
+        .map(value => String(value || '').trim());
+      const hasHeader = headers.some(value => value !== '');
+      if (!hasHeader) return { success: false, error: 'V listu "' + sheetName + '" nejsou v B1:L1 vyplněné hlavičky.' };
+
+      return { success: true, headers: headers };
+    } catch (e) {
+      return { success: false, error: 'Nelze načíst hlavičky MIS prodej: ' + e.message };
+    }
+  },
+
+  /**
+   * Specializovaný zápis MIS prodej.
+   * Cílový řádek 1 nikdy nemaže; data zapisuje pouze do B:L od řádku 2.
+   * @param {string} jsonPayload
+   * @param {string} sheetName
+   * @param {Object} options
+   * @returns {{success: boolean, count?: number, actualStartRow?: number, error?: string}}
+   */
+  importMisChunk(jsonPayload, sheetName, options) {
+    options = options || {};
+    let data;
+    try {
+      data = JSON.parse(jsonPayload);
+      data = data.map(row => row.map(val => {
+        if (typeof val === 'string' && _ISO_DATE_RE.test(val)) {
+          const d = new Date(val);
+          return isNaN(d.getTime()) ? val : d;
+        }
+        return val;
+      }));
+    } catch (e) {
+      return { success: false, error: 'Chyba při čtení dat MIS prodej: ' + e.message };
+    }
+
+    if (!data || data.length === 0) return { success: true, count: 0, actualStartRow: 2 };
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return { success: false, error: 'Cílový list "' + sheetName + '" nebyl nalezen.' };
+
+    const width = ModuleImport.MIS_LAST_COLUMN - ModuleImport.MIS_FIRST_COLUMN + 1;
+    if (options.isFirstChunk) {
+      const maxRows = sheet.getMaxRows();
+      if (maxRows > 1) {
+        AppLogger.info('MIS prodej: čistím oblast B:L od řádku 2 (' + (maxRows - 1) + ' řádků).');
+        sheet.getRange(2, ModuleImport.MIS_FIRST_COLUMN, maxRows - 1, width).clearContent();
+      }
+    }
+
+    const startRow = options.startRow !== undefined ? Number(options.startRow) : 2;
+    const neededRows = startRow + data.length - 1;
+    const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
+    const rowsToPrepare = Math.max(neededRows, preparedRows);
+    if (rowsToPrepare > sheet.getMaxRows()) {
+      const rowsToAdd = rowsToPrepare - sheet.getMaxRows();
+      sheet.insertRowsAfter(sheet.getMaxRows(), rowsToAdd);
+      AppLogger.info('MIS prodej: rozšiřuji cílový list o ' + rowsToAdd + ' řádků.');
+    }
+
+    const normalizedData = data.map(row => {
+      const normalized = (Array.isArray(row) ? row.slice(0, width) : []);
+      while (normalized.length < width) normalized.push('');
+      return normalized;
+    });
+
+    try {
+      const spreadsheetId = ss.getId();
+      const startCol = Utils.columnToLetter(ModuleImport.MIS_FIRST_COLUMN);
+      const endCol = Utils.columnToLetter(ModuleImport.MIS_LAST_COLUMN);
+      const safeSheetName = "'" + String(sheetName).replace(/'/g, "''") + "'";
+      const range = safeSheetName + '!' + startCol + startRow + ':' + endCol + (startRow + normalizedData.length - 1);
+
+      const valueRange = Sheets.newValueRange();
+      valueRange.values = normalizedData;
+      Sheets.Spreadsheets.Values.update(valueRange, spreadsheetId, range, { valueInputOption: 'RAW' });
+
+      AppLogger.ok('MIS prodej: zapsáno ' + normalizedData.length + ' řádků od řádku ' + startRow + ' do B:L.');
+      return { success: true, count: normalizedData.length, actualStartRow: startRow };
+    } catch (e) {
+      AppLogger.error('MIS prodej: chyba V4 zápisu, zkouším setValues: ' + e.message);
+      try {
+        sheet.getRange(startRow, ModuleImport.MIS_FIRST_COLUMN, normalizedData.length, width).setValues(normalizedData);
+        AppLogger.ok('MIS prodej: zapsáno fallbackem ' + normalizedData.length + ' řádků od řádku ' + startRow + ' do B:L.');
+        return { success: true, count: normalizedData.length, actualStartRow: startRow };
+      } catch (err) {
+        return { success: false, error: 'Chyba zápisu MIS prodej: ' + err.message };
+      }
+    }
+  },
+
+  /**
    * Import souborů z Google Drive
    */
   importToDrive(fileIds, options) {
@@ -298,6 +403,14 @@ function moduleImport_getActiveArticles() {
 
 function moduleImport_cashChunk(data, sheetName, options) {
   return ModuleImport.importCashChunk(data, sheetName, options);
+}
+
+function moduleImport_getMisTargetHeaders(sheetName) {
+  return ModuleImport.getMisTargetHeaders(sheetName);
+}
+
+function moduleImport_misChunk(data, sheetName, options) {
+  return ModuleImport.importMisChunk(data, sheetName, options);
 }
 
 function moduleImport_uploadToDrive(fileObj, options) {

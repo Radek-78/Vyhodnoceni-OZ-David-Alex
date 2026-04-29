@@ -394,6 +394,7 @@
         ];
 
         var CASH_COLUMNS = ['ITEMNR', 'DESCRIPTION', 'ITEMGROUP', 'ITEMCOUNT', 'KG', 'CZK', 'STORE'];
+        var MIS_SPECIAL_HEADERS = ['Sklad O05', 'Artikly |02'];
 
         if (!S._impSlots) {
             S._impSlots = IMPORT_MODULES.map(function (cfg) {
@@ -657,6 +658,44 @@
                     continue;
                 }
 
+                if (slot.moduleConfig.key === 'mis') {
+                    var misRows = await prepareMisRows(file, targetSheet, sourceSheetIdx, moduleBase, moduleSpan);
+                    if (!misRows.length) {
+                        AppLogger.warn('MIS prodej: ve zdrojovém souboru nebyla nalezena žádná data pod hlavičkou.');
+                        perModule.push({
+                            label: slot.moduleConfig.label,
+                            sheet: targetSheet,
+                            rows: 0,
+                            fileName: file.name
+                        });
+                        continue;
+                    }
+
+                    var misChunks = chunkRows(misRows, 5000);
+                    AppLogger.info('MIS prodej: zápis do listu "' + targetSheet + '" po ' + misChunks.length + ' dávkách.');
+                    for (var mi = 0; mi < misChunks.length; mi++) {
+                        updateImportProgress(moduleBase, moduleSpan, 35 + Math.round(((mi + 1) / misChunks.length) * 65), 100,
+                            'Zápis MIS prodej: dávka ' + (mi + 1) + '/' + misChunks.length);
+                        var misRes = await callServer('moduleImport_misChunk', [JSON.stringify(misChunks[mi]), targetSheet, {
+                            isFirstChunk: mi === 0,
+                            overwrite: overwrite,
+                            totalRows: misRows.length,
+                            startRow: mi === 0 ? undefined : (2 + mi * 5000)
+                        }]);
+                        if (!misRes.success) throw new Error(misRes.error);
+                        AppLogger.ok('MIS prodej: zapsána dávka ' + (mi + 1) + '/' + misChunks.length + ' (' + misChunks[mi].length + ' řádků).');
+                    }
+
+                    totalRows += misRows.length;
+                    perModule.push({
+                        label: slot.moduleConfig.label,
+                        sheet: targetSheet,
+                        rows: misRows.length,
+                        fileName: file.name
+                    });
+                    continue;
+                }
+
                 AppLogger.info(slot.moduleConfig.label + ': čtu soubor ' + file.name);
                 updateImportProgress(moduleBase, moduleSpan, 5, 100, 'Čtení: ' + slot.moduleConfig.label);
                 var workbook = await readWorkbook(file);
@@ -866,6 +905,164 @@
             updateImportProgress(moduleBase, moduleSpan, 30, 100, 'CSV připraveno k zápisu');
 
             return result;
+        }
+
+        async function prepareMisRows(file, targetSheet, sourceSheetIdx, moduleBase, moduleSpan) {
+            AppLogger.info('MIS prodej: načítám cílové hlavičky z listu "' + targetSheet + '" v rozsahu B1:L1.');
+            updateImportProgress(moduleBase, moduleSpan, 3, 100, 'Kontrola hlaviček MIS');
+            var targetRes = await callServer('moduleImport_getMisTargetHeaders', [targetSheet]);
+            if (!targetRes.success) throw new Error(targetRes.error);
+
+            var targetHeaders = targetRes.headers || [];
+            if (!targetHeaders.length) throw new Error('MIS prodej: cílový list nemá v rozsahu B1:L1 žádné hlavičky.');
+            AppLogger.info('MIS prodej: cílové sloupce B:L načteny (' + targetHeaders.length + ' sloupců).');
+
+            AppLogger.info('MIS prodej: čtu XLSX soubor ' + file.name + '.');
+            updateImportProgress(moduleBase, moduleSpan, 8, 100, 'Čtení XLSX');
+            var workbook = await readWorkbook(file);
+            var sourceSheetName = workbook.SheetNames[sourceSheetIdx] || workbook.SheetNames[0];
+            var rows = XLSX.utils.sheet_to_json(workbook.Sheets[sourceSheetName], { header: 1, defval: '', raw: false });
+            AppLogger.info('MIS prodej: načten zdrojový list "' + sourceSheetName + '" (' + rows.length + ' řádků).');
+
+            updateImportProgress(moduleBase, moduleSpan, 18, 100, 'Hledání hlavičky MIS');
+            var headerInfo = findMisHeaderRow(rows, targetHeaders);
+            if (!headerInfo) {
+                throw new Error('MIS prodej: ve zdrojovém souboru nebyla nalezena hlavička odpovídající cílovému listu.');
+            }
+
+            AppLogger.ok('MIS prodej: hlavička nalezena na řádku ' + (headerInfo.index + 1) + ' se shodou ' + headerInfo.score + ' sloupců.');
+            var mapping = buildMisColumnMapping(headerInfo.row, targetHeaders);
+            if (mapping.missing.length) {
+                throw new Error('MIS prodej: ve zdrojové hlavičce chybí sloupce: ' + mapping.missing.join(', '));
+            }
+            AppLogger.info('MIS prodej: namapováno ' + mapping.mappedCount + ' cílových sloupců v rozsahu B:L.');
+
+            updateImportProgress(moduleBase, moduleSpan, 28, 100, 'Příprava dat MIS');
+            var result = [];
+            for (var r = headerInfo.index + 1; r < rows.length; r++) {
+                var sourceRow = rows[r] || [];
+                if (!rowHasValue(sourceRow)) continue;
+                result.push(mapping.columns.map(function (sourceIdx) {
+                    if (sourceIdx === null || sourceIdx === undefined) return '';
+                    var value = sourceRow[sourceIdx];
+                    return cleanCellValue(value);
+                }));
+            }
+
+            AppLogger.ok('MIS prodej: připraveno ' + result.length + ' řádků pro zápis od řádku 2.');
+            updateImportProgress(moduleBase, moduleSpan, 35, 100, 'MIS připraveno k zápisu');
+            return result;
+        }
+
+        function findMisHeaderRow(rows, targetHeaders) {
+            var requiredScore = getMisRequiredHeaderCount(targetHeaders);
+            var expectedIdx = 6;
+            if (rows[expectedIdx]) {
+                var expectedScore = scoreMisHeaderRow(rows[expectedIdx], targetHeaders);
+                if (expectedScore >= requiredScore) {
+                    return { index: expectedIdx, row: rows[expectedIdx], score: expectedScore };
+                }
+            }
+
+            var best = null;
+            for (var r = 0; r < rows.length; r++) {
+                var score = scoreMisHeaderRow(rows[r] || [], targetHeaders);
+                if (!best || score > best.score) {
+                    best = { index: r, row: rows[r] || [], score: score };
+                }
+            }
+            return best && best.score > 0 ? best : null;
+        }
+
+        function getMisRequiredHeaderCount(targetHeaders) {
+            return targetHeaders.filter(function (header) {
+                return String(header || '').trim() !== '';
+            }).length;
+        }
+
+        function scoreMisHeaderRow(sourceHeader, targetHeaders) {
+            var score = 0;
+            targetHeaders.forEach(function (header) {
+                if (!String(header || '').trim()) return;
+                if (findMisSourceColumn(sourceHeader, header) !== -1) score++;
+            });
+            return score;
+        }
+
+        function buildMisColumnMapping(sourceHeader, targetHeaders) {
+            var columns = [];
+            var missing = [];
+            var mappedCount = 0;
+
+            for (var i = 0; i < targetHeaders.length; i++) {
+                var header = String(targetHeaders[i] || '').trim();
+                if (!header) {
+                    var prevHeader = String(targetHeaders[i - 1] || '').trim();
+                    var prevIsSpecial = isMisSpecialHeader(prevHeader);
+                    var prevSourceIdx = prevIsSpecial ? findMisSourceColumn(sourceHeader, prevHeader) : -1;
+                    if (prevSourceIdx !== -1) {
+                        columns.push(prevSourceIdx + 1);
+                        mappedCount++;
+                    } else {
+                        columns.push(null);
+                    }
+                    continue;
+                }
+
+                var sourceIdx = findMisSourceColumn(sourceHeader, header);
+                if (sourceIdx === -1) {
+                    missing.push(header);
+                    columns.push(null);
+                } else {
+                    columns.push(sourceIdx);
+                    mappedCount++;
+                }
+            }
+
+            return { columns: columns, missing: missing, mappedCount: mappedCount };
+        }
+
+        function findMisSourceColumn(sourceHeader, targetHeader) {
+            var target = normalizeHeader(targetHeader);
+            var isSpecial = isMisSpecialHeader(targetHeader);
+            var fallback = -1;
+
+            for (var i = 0; i < sourceHeader.length; i++) {
+                var source = normalizeHeader(sourceHeader[i]);
+                if (!source) continue;
+                if (source === target) return i;
+                if (isSpecial && source.indexOf(target) !== -1) fallback = i;
+            }
+
+            return fallback;
+        }
+
+        function isMisSpecialHeader(header) {
+            var normalized = normalizeHeader(header);
+            return MIS_SPECIAL_HEADERS.some(function (special) {
+                return normalized === normalizeHeader(special) || normalized.indexOf(normalizeHeader(special)) !== -1;
+            });
+        }
+
+        function normalizeHeader(value) {
+            return String(value || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLocaleLowerCase('cs-CZ');
+        }
+
+        function rowHasValue(row) {
+            return row.some(function (cell) {
+                return cell !== '' && cell !== null && cell !== undefined;
+            });
+        }
+
+        function cleanCellValue(value) {
+            if (value && typeof value === 'object' && 'v' in value && !(value instanceof Date)) value = value.v;
+            if (value === undefined || value === null) return '';
+            if (typeof value === 'string') return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+            if (typeof value === 'number' && !isFinite(value)) return '';
+            return value;
         }
 
         function isCashHeaderRow(row) {
