@@ -142,6 +142,52 @@ const ModuleImport = {
   },
 
   /**
+   * První krok importu: vyčistí pouze definovaný cílový rozsah daného modulu.
+   * Řádek 1 nikdy nemaže.
+   * @param {string} moduleKey
+   * @param {string} sheetName
+   * @returns {{success: boolean, error?: string}}
+   */
+  clearTargetRange(moduleKey, sheetName) {
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      let sheet = ss.getSheetByName(sheetName);
+
+      if (moduleKey === 'cash') {
+        if (!sheet) {
+          sheet = ss.insertSheet(sheetName);
+          sheet.getRange(1, ModuleImport.CASH_DATE_COLUMN).setValue('Datum');
+          sheet.getRange(1, ModuleImport.CASH_FIRST_DATA_COLUMN, 1, ModuleImport.CASH_COLUMNS.length).setValues([ModuleImport.CASH_COLUMNS]);
+          sheet.setFrozenRows(1);
+        }
+
+        const maxRows = sheet.getMaxRows();
+        if (maxRows > 1) {
+          AppLogger.info('Pokladní data: krok čištění C:J od řádku 2 (' + (maxRows - 1) + ' řádků).');
+          ModuleImport.clearCashData_(sheet, maxRows);
+        }
+        return { success: true };
+      }
+
+      if (!sheet) return { success: false, error: 'Cílový list "' + sheetName + '" nebyl nalezen.' };
+
+      if (moduleKey === 'mis') {
+        ModuleImport.clearModuleRange_(sheet, ModuleImport.MIS_FIRST_COLUMN, ModuleImport.MIS_LAST_COLUMN, 'MIS prodej');
+        return { success: true };
+      }
+
+      if (moduleKey === 'fa') {
+        ModuleImport.clearModuleRange_(sheet, ModuleImport.FA_FIRST_COLUMN, ModuleImport.FA_LAST_COLUMN, 'FA');
+        return { success: true };
+      }
+
+      return { success: false, error: 'Neznámý importní modul: ' + moduleKey };
+    } catch (e) {
+      return { success: false, error: 'Nelze vyčistit cílový rozsah: ' + e.message };
+    }
+  },
+
+  /**
    * Specializovaný zápis pokladních dat.
    * Řádek 1 s hlavičkou v cílovém listu nikdy nemaže.
    * @param {string} jsonPayload
@@ -186,7 +232,7 @@ const ModuleImport = {
 
     const startRow = options.startRow !== undefined ? Number(options.startRow) : 2;
     const neededRows = startRow + data.length - 1;
-    const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
+    const preparedRows = options.totalRows ? Number(options.totalRows) + 1 : neededRows;
     const rowsToPrepare = Math.max(neededRows, preparedRows);
     if (rowsToPrepare > sheet.getMaxRows()) {
       const rowsToAdd = rowsToPrepare - sheet.getMaxRows();
@@ -284,7 +330,7 @@ const ModuleImport = {
 
     const startRow = options.startRow !== undefined ? Number(options.startRow) : 2;
     const neededRows = startRow + data.length - 1;
-    const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
+    const preparedRows = options.totalRows ? Number(options.totalRows) + 1 : neededRows;
     const rowsToPrepare = Math.max(neededRows, preparedRows);
     if (rowsToPrepare > sheet.getMaxRows()) {
       const rowsToAdd = rowsToPrepare - sheet.getMaxRows();
@@ -409,7 +455,7 @@ const ModuleImport = {
 
     const startRow = options.startRow !== undefined ? Number(options.startRow) : 2;
     const neededRows = startRow + data.length - 1;
-    const preparedRows = (options.isFirstChunk && options.totalRows) ? Number(options.totalRows) + 1 : neededRows;
+    const preparedRows = options.totalRows ? Number(options.totalRows) + 1 : neededRows;
     const rowsToPrepare = Math.max(neededRows, preparedRows);
     if (rowsToPrepare > sheet.getMaxRows()) {
       const rowsToAdd = rowsToPrepare - sheet.getMaxRows();
@@ -525,6 +571,16 @@ const ModuleImport = {
     sheet.getRange(2, ModuleImport.CASH_CLEAR_FIRST_COLUMN, maxRows - 1, width).clearContent();
   },
 
+  clearModuleRange_(sheet, firstColumn, lastColumn, label) {
+    const maxRows = sheet.getMaxRows();
+    if (maxRows <= 1) return;
+
+    const width = lastColumn - firstColumn + 1;
+    AppLogger.info(label + ': krok čištění ' + Utils.columnToLetter(firstColumn) + ':' + Utils.columnToLetter(lastColumn) +
+      ' od řádku 2 (' + (maxRows - 1) + ' řádků).');
+    sheet.getRange(2, firstColumn, maxRows - 1, width).clearContent();
+  },
+
   normalizeArticle_(value) {
     if (value === null || value === undefined) return '';
     let text = String(value).trim();
@@ -540,6 +596,10 @@ function moduleImport_chunk(data, sheetName, options) {
 
 function moduleImport_getActiveArticles() {
   return ModuleImport.getActiveArticles();
+}
+
+function moduleImport_clearTargetRange(moduleKey, sheetName) {
+  return ModuleImport.clearTargetRange(moduleKey, sheetName);
 }
 
 function moduleImport_cashChunk(data, sheetName, options) {
