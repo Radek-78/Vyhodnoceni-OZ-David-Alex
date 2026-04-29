@@ -706,7 +706,9 @@
                             totalRows: faRows.length,
                             startRow: 2 + fi * 5000,
                             dateTargetIndexes: faRows.dateTargetIndexes || [],
-                            itemTargetIndexes: faRows.itemTargetIndexes || []
+                            itemTargetIndexes: faRows.itemTargetIndexes || [],
+                            integerTargetIndexes: faRows.integerTargetIndexes || [],
+                            percentTargetIndexes: faRows.percentTargetIndexes || []
                         }]);
                         if (!faRes.success) throw new Error(faRes.error);
                         AppLogger.ok('FA: zapsána dávka ' + (fi + 1) + '/' + faChunks.length + ' (' + faChunks[fi].length + ' řádků).');
@@ -1042,6 +1044,8 @@
 
             result.dateTargetIndexes = mapping.dateTargetIndexes;
             result.itemTargetIndexes = mapping.itemTargetIndexes;
+            result.integerTargetIndexes = mapping.integerTargetIndexes;
+            result.percentTargetIndexes = mapping.percentTargetIndexes;
             AppLogger.ok('FA: připraveno ' + result.length + ' řádků pro zápis od řádku 2.');
             updateImportProgress(moduleBase, moduleSpan, 35, 100, 'FA připraveno k zápisu');
             return result;
@@ -1108,6 +1112,8 @@
             var mappedCount = 0;
             var dateTargetIndexes = [];
             var itemTargetIndexes = [];
+            var integerTargetIndexes = [];
+            var percentTargetIndexes = [];
 
             for (var i = 0; i < targetHeaders.length; i++) {
                 var header = String(targetHeaders[i] || '').trim();
@@ -1117,6 +1123,7 @@
                     if (prevSourceIdx !== -1) {
                         columns.push(prevSourceIdx + 1);
                         mappedCount++;
+                        if (getFaPairedKey(prevHeader) === 'warehouse') integerTargetIndexes.push(i);
                     } else {
                         columns.push(null);
                     }
@@ -1132,6 +1139,8 @@
                     mappedCount++;
                     if (normalizeHeader(header) === normalizeHeader('Entrydate')) dateTargetIndexes.push(i);
                     if (normalizeHeader(header) === normalizeHeader('Item')) itemTargetIndexes.push(i);
+                    if (isFaIntegerHeader(header)) integerTargetIndexes.push(i);
+                    if (isFaPercentHeader(header)) percentTargetIndexes.push(i);
                 }
             }
 
@@ -1140,7 +1149,9 @@
                 missing: missing,
                 mappedCount: mappedCount,
                 dateTargetIndexes: dateTargetIndexes,
-                itemTargetIndexes: itemTargetIndexes
+                itemTargetIndexes: itemTargetIndexes,
+                integerTargetIndexes: integerTargetIndexes,
+                percentTargetIndexes: percentTargetIndexes
             };
         }
 
@@ -1168,6 +1179,14 @@
             if (normalized === normalizeHeader('Item')) return 'item';
             if (normalized === normalizeHeader('Warehouse')) return 'warehouse';
             return '';
+        }
+
+        function isFaIntegerHeader(header) {
+            return normalizeHeader(header) === normalizeHeader('No. of missing items');
+        }
+
+        function isFaPercentHeader(header) {
+            return normalizeHeader(header) === normalizeHeader('% of stores with missing items');
         }
 
         function scoreMisHeaderRow(sourceHeader, targetHeaders) {
@@ -1285,6 +1304,12 @@
             if (normalizeHeader(targetHeader) === normalizeHeader('Item')) {
                 return normalizeFaItem(cleaned);
             }
+            if (isFaIntegerHeader(targetHeader)) {
+                return normalizeMisInteger(cleaned);
+            }
+            if (isFaPercentHeader(targetHeader)) {
+                return normalizePercent(cleaned);
+            }
             return cleaned;
         }
 
@@ -1295,6 +1320,16 @@
             text = text.replace(/\D/g, '');
             if (!text) return '';
             return Number(text.slice(-5));
+        }
+
+        function normalizePercent(value) {
+            if (value === undefined || value === null || value === '') return '';
+            if (typeof value === 'number') return value > 1 ? value / 100 : value;
+
+            var text = String(value).trim().replace('%', '').replace(/\s/g, '').replace(',', '.');
+            var num = Number(text);
+            if (isNaN(num)) return value;
+            return num > 1 ? num / 100 : num;
         }
 
         function isMisTimeHeader(header) {

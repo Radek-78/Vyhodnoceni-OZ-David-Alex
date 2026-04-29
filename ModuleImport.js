@@ -508,11 +508,27 @@ const ModuleImport = {
     if (!numRows) return;
     const dateIndexes = Array.isArray(options.dateTargetIndexes) ? options.dateTargetIndexes : [];
     const itemIndexes = Array.isArray(options.itemTargetIndexes) ? options.itemTargetIndexes : [];
+    const integerIndexes = Array.isArray(options.integerTargetIndexes) ? options.integerTargetIndexes : [];
+    const percentIndexes = Array.isArray(options.percentTargetIndexes) ? options.percentTargetIndexes : [];
 
     itemIndexes.forEach(offset => {
       const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);
       if (col >= ModuleImport.FA_FIRST_COLUMN && col <= ModuleImport.FA_LAST_COLUMN) {
         sheet.getRange(startRow, col, numRows, 1).setNumberFormat('00000');
+      }
+    });
+
+    integerIndexes.forEach(offset => {
+      const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);
+      if (col >= ModuleImport.FA_FIRST_COLUMN && col <= ModuleImport.FA_LAST_COLUMN) {
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('0');
+      }
+    });
+
+    percentIndexes.forEach(offset => {
+      const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);
+      if (col >= ModuleImport.FA_FIRST_COLUMN && col <= ModuleImport.FA_LAST_COLUMN) {
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('0.00%');
       }
     });
 
