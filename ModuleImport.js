@@ -499,6 +499,14 @@ const ModuleImport = {
   applyFaFormats_(sheet, startRow, numRows, options) {
     if (!numRows) return;
     const dateIndexes = Array.isArray(options.dateTargetIndexes) ? options.dateTargetIndexes : [];
+    const textIndexes = Array.isArray(options.textTargetIndexes) ? options.textTargetIndexes : [];
+
+    textIndexes.forEach(offset => {
+      const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);
+      if (col >= ModuleImport.FA_FIRST_COLUMN && col <= ModuleImport.FA_LAST_COLUMN) {
+        sheet.getRange(startRow, col, numRows, 1).setNumberFormat('@');
+      }
+    });
 
     dateIndexes.forEach(offset => {
       const col = ModuleImport.FA_FIRST_COLUMN + Number(offset);

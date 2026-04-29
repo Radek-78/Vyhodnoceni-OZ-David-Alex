@@ -705,7 +705,8 @@
                             overwrite: overwrite,
                             totalRows: faRows.length,
                             startRow: 2 + fi * 5000,
-                            dateTargetIndexes: faRows.dateTargetIndexes || []
+                            dateTargetIndexes: faRows.dateTargetIndexes || [],
+                            textTargetIndexes: faRows.textTargetIndexes || []
                         }]);
                         if (!faRes.success) throw new Error(faRes.error);
                         AppLogger.ok('FA: zapsána dávka ' + (fi + 1) + '/' + faChunks.length + ' (' + faChunks[fi].length + ' řádků).');
@@ -1040,6 +1041,7 @@
             }
 
             result.dateTargetIndexes = mapping.dateTargetIndexes;
+            result.textTargetIndexes = mapping.textTargetIndexes;
             AppLogger.ok('FA: připraveno ' + result.length + ' řádků pro zápis od řádku 2.');
             updateImportProgress(moduleBase, moduleSpan, 35, 100, 'FA připraveno k zápisu');
             return result;
@@ -1105,6 +1107,7 @@
             var missing = [];
             var mappedCount = 0;
             var dateTargetIndexes = [];
+            var textTargetIndexes = [];
 
             for (var i = 0; i < targetHeaders.length; i++) {
                 var header = String(targetHeaders[i] || '').trim();
@@ -1128,6 +1131,7 @@
                     columns.push(sourceIdx);
                     mappedCount++;
                     if (normalizeHeader(header) === normalizeHeader('Entrydate')) dateTargetIndexes.push(i);
+                    if (normalizeHeader(header) === normalizeHeader('Item')) textTargetIndexes.push(i);
                 }
             }
 
@@ -1135,7 +1139,8 @@
                 columns: columns,
                 missing: missing,
                 mappedCount: mappedCount,
-                dateTargetIndexes: dateTargetIndexes
+                dateTargetIndexes: dateTargetIndexes,
+                textTargetIndexes: textTargetIndexes
             };
         }
 
@@ -1273,7 +1278,19 @@
             if (normalizeHeader(targetHeader) === normalizeHeader('Entrydate')) {
                 return formatMisDate(cleaned);
             }
+            if (normalizeHeader(targetHeader) === normalizeHeader('Item')) {
+                return normalizeFaItem(cleaned);
+            }
             return cleaned;
+        }
+
+        function normalizeFaItem(value) {
+            if (value === undefined || value === null || value === '') return '';
+            var text = String(value).trim();
+            if (/^\d+(\.0+)?$/.test(text)) text = String(parseInt(text, 10));
+            text = text.replace(/\D/g, '');
+            if (!text) return '';
+            return text.slice(-5).padStart(5, '0');
         }
 
         function cleanCellValue(value) {
